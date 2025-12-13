@@ -25,13 +25,13 @@ set -euo pipefail
 # CONFIGURATION SECTION
 # Modify these values as needed
 # ---------------------------
-RESOURCE_GROUP="my-batch-rg"             # Azure Resource Group name
-LOCATION="eastus2"                       # Azure region (e.g., eastus2, westeurope, southcentralus)
+RESOURCE_GROUP="batch-demo-test"         # Azure Resource Group name
+LOCATION="swedencentral"                # Azure region (e.g., eastus2, westeurope, southcentralus)
 
 # GPU Configuration
-ENABLE_GPU=true                          # Set to true for GPU workloads, false for CPU-only
+ENABLE_GPU=false                         # Set to true for GPU workloads, false for CPU-only
 GPU_VM_SIZE="Standard_NC4as_T4_v3"       # GPU VM size (NC4as_T4_v3, NC6s_v3, NC8as_T4_v3, etc.)
-CPU_VM_SIZE="Standard_D4s_v3"            # CPU VM size for non-GPU workloads
+CPU_VM_SIZE="Standard_D2s_v3"            # CPU VM size for non-GPU workloads (using smaller size for test)
 
 # Auto-select VM size based on GPU setting
 if [[ "$ENABLE_GPU" == "true" ]]; then
@@ -52,7 +52,7 @@ IMAGE_OFFER="BatchImages"                # Offer name for the image
 IMAGE_SKU="Ubuntu2204"                   # SKU name for the image
 
 # Batch Configuration
-BATCH_ACCOUNT_NAME="mybatchaccount-$RANDOM"  # Name of Azure Batch account (append random to avoid collisions)
+BATCH_ACCOUNT_NAME="mybatch$RANDOM"  # Name of Azure Batch account (alphanumeric only, 3-24 chars)
 BATCH_POOL_ID="myBatchPool"                  # Name/ID of the Batch pool to create
 NODE_AGENT_SKU="batch.node.ubuntu 22.04"     # Node agent SKU id matching OS image
 
@@ -63,8 +63,8 @@ else
   CONTAINER_IMAGE="ubuntu:22.04"
 fi
 
-# Base OS image URN: Ubuntu 22.04 LTS. Use Gen1 for compatibility.
-VM_IMAGE_URN="Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen1:latest"
+# Base OS image URN: Ubuntu 22.04 LTS. Standard images are Gen1 by default.
+VM_IMAGE_URN="Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest"
 HYPERV_GENERATION="V1"                   # V1 or V2 - must match the VM image
 
 # Create logs directory & file
@@ -228,9 +228,20 @@ else
       --output none
 fi
 
-# Create Image Version from the generalized VM
-echo "[INFO] Creating image version $IMAGE_VERSION from VM $VM_NAME ..."
-VM_ID=$(az vm show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query id -o tsv)
+# Create a temporary managed image from the generalized VM
+TEMP_IMAGE_NAME="${VM_NAME}-image"
+echo "[INFO] Creating temporary managed image $TEMP_IMAGE_NAME ..."
+run_cmd "Create managed image" \
+  az image create \
+    --resource-group "$RESOURCE_GROUP" \
+    --name "$TEMP_IMAGE_NAME" \
+    --source "$VM_NAME" \
+    --os-type Linux \
+    --hyper-v-generation "$HYPERV_GENERATION" \
+    --output none
+
+# Create Image Version from the managed image
+echo "[INFO] Creating image version $IMAGE_VERSION from managed image ..."
 run_cmd "Create image version" \
   az sig image-version create \
     --resource-group "$RESOURCE_GROUP" \
@@ -238,7 +249,7 @@ run_cmd "Create image version" \
     --gallery-image-definition "$IMAGE_DEFINITION_NAME" \
     --gallery-image-version "$IMAGE_VERSION" \
     --target-regions "$LOCATION" \
-    --managed-image "$VM_ID" \
+    --managed-image "$TEMP_IMAGE_NAME" \
     --output none
 
 echo "[INFO] Shared Image Gallery image version created: $GALLERY_NAME/$IMAGE_DEFINITION_NAME/$IMAGE_VERSION"
@@ -268,7 +279,7 @@ echo "[INFO] Using image: $IMAGE_ID"
 START_TASK_SCRIPT="/bin/bash -c '"
 START_TASK_SCRIPT+="set -euo pipefail; "
 START_TASK_SCRIPT+="echo Installing Docker...; "
-START_TASK_SCRIPT+="apt-get update -y && apt-get install -y moby-engine moby-cli; "
+START_TASK_SCRIPT+="apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io; "
 
 if [[ "$ENABLE_GPU" == "true" ]]; then
   START_TASK_SCRIPT+="echo Installing NVIDIA container toolkit...; "
@@ -276,6 +287,7 @@ if [[ "$ENABLE_GPU" == "true" ]]; then
   START_TASK_SCRIPT+="curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg; "
   START_TASK_SCRIPT+="curl -s -L https://nvidia.github.io/libnvidia-container/\$distribution/libnvidia-container.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list; "
   START_TASK_SCRIPT+="apt-get update && apt-get install -y nvidia-container-toolkit; "
+  START_TASK_SCRIPT+="nvidia-ctk runtime configure --runtime=docker; "
   START_TASK_SCRIPT+="systemctl restart docker; "
   START_TASK_SCRIPT+="echo Waiting for GPU...; "
   START_TASK_SCRIPT+="until nvidia-smi >/dev/null 2>&1; do sleep 5; done; "
