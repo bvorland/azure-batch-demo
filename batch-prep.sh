@@ -1,16 +1,13 @@
 #!/bin/bash
 # batch-prep.sh
 #
-# This script automates the creation of a custom Azure VM image for GPU-enabled Azure Batch pools,
-# installs necessary GPU drivers and container runtimes without manually SSH-ing into the VM, and
-# creates an Azure Batch pool using the custom image. It uses Azure CLI and "az vm run-command"
-# to run configuration inside the VM without requiring interactive login.
+# This script automates the creation of a custom Azure VM image for Azure Batch pools (GPU or CPU),
+# creates a Shared Image Gallery, and deploys an Azure Batch pool using the custom image.
+# It uses Azure CLI and "az vm run-command" to configure VMs without requiring SSH access.
 #
 # Configuration:
 #   Adjust the variables in the CONFIG section below to customize resource names, VM size, OS image,
-#   admin username, VM size (e.g. Standard_NC4as_T4_v3, Standard_NC8as_T4_v3, etc.), Batch pool
-#   details, and container image name. Ensure that the VM size is supported by your chosen OS image
-#   and the Azure region you deploy into.
+#   admin username, Batch pool details, and container image name. Set ENABLE_GPU=true for GPU workloads.
 #
 # Logging and Error Handling:
 #   The script logs all output to a log file (named with a timestamp) in the current directory,
@@ -28,24 +25,47 @@ set -euo pipefail
 # CONFIGURATION SECTION
 # Modify these values as needed
 # ---------------------------
-RESOURCE_GROUP="my-batch-rg"           # Azure Resource Group name
-LOCATION="westeurope"                 # Azure region (e.g., westeurope, eastus, etc.)
+RESOURCE_GROUP="my-batch-rg"             # Azure Resource Group name
+LOCATION="eastus2"                       # Azure region (e.g., eastus2, westeurope, southcentralus)
 
-VM_NAME="batch-custom-vm"              # Name of the temporary VM used to build the image
-VM_SIZE="Standard_NC4as_T4_v3"         # VM size (e.g. Standard_NC4as_T4_v3, NC8as_T4_v3, NC16as_T4_v3)
-ADMIN_USERNAME="azureuser"             # Admin username for the VM
+# GPU Configuration
+ENABLE_GPU=true                          # Set to true for GPU workloads, false for CPU-only
+GPU_VM_SIZE="Standard_NC4as_T4_v3"       # GPU VM size (NC4as_T4_v3, NC6s_v3, NC8as_T4_v3, etc.)
+CPU_VM_SIZE="Standard_D4s_v3"            # CPU VM size for non-GPU workloads
 
-CUSTOM_IMAGE_NAME="myCustomGpuImage"    # Name of the managed image to create
+# Auto-select VM size based on GPU setting
+if [[ "$ENABLE_GPU" == "true" ]]; then
+  VM_SIZE="$GPU_VM_SIZE"
+else
+  VM_SIZE="$CPU_VM_SIZE"
+fi
 
+VM_NAME="batch-custom-vm"                # Name of the temporary VM used to build the image
+ADMIN_USERNAME="azureuser"               # Admin username for the VM
+
+# Shared Image Gallery Configuration
+GALLERY_NAME="batchImageGallery"         # Name of the Shared Image Gallery
+IMAGE_DEFINITION_NAME="batchCustomImage" # Name of the image definition
+IMAGE_VERSION="1.0.0"                    # Version of the image
+IMAGE_PUBLISHER="MyCompany"              # Publisher name for the image
+IMAGE_OFFER="BatchImages"                # Offer name for the image
+IMAGE_SKU="Ubuntu2204"                   # SKU name for the image
+
+# Batch Configuration
 BATCH_ACCOUNT_NAME="mybatchaccount-$RANDOM"  # Name of Azure Batch account (append random to avoid collisions)
-BATCH_POOL_ID="myGpuPool"                    # Name/ID of the Batch pool to create
-NODE_AGENT_SKU="batch.node.ubuntu 22.04"     # Node agent SKU id matching OS image (e.g. batch.node.ubuntu 22.04)
+BATCH_POOL_ID="myBatchPool"                  # Name/ID of the Batch pool to create
+NODE_AGENT_SKU="batch.node.ubuntu 22.04"     # Node agent SKU id matching OS image
 
-# Container image(s) to prefetch and run (comma-separated if multiple). Update with your own image.
-CONTAINER_IMAGE="myacr.azurecr.io/mygpuimage:latest"
+# Container image(s) to prefetch (comma-separated if multiple). Use appropriate image for your workload.
+if [[ "$ENABLE_GPU" == "true" ]]; then
+  CONTAINER_IMAGE="nvidia/cuda:12.0.0-base-ubuntu22.04"
+else
+  CONTAINER_IMAGE="ubuntu:22.04"
+fi
 
-# Base OS image URN: Ubuntu 22.04 LTS (Gen2). Change if using a different OS or version.
-VM_IMAGE_URN="Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest"
+# Base OS image URN: Ubuntu 22.04 LTS. Use Gen1 for compatibility.
+VM_IMAGE_URN="Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen1:latest"
+HYPERV_GENERATION="V1"                   # V1 or V2 - must match the VM image
 
 # Create logs directory & file
 LOG_DIR="./logs"
@@ -118,92 +138,110 @@ az vm wait --custom "instanceView.statuses[?code=='PowerState/running']" --resou
 
 echo "[INFO] VM $VM_NAME is running."
 
-# Install NVIDIA GPU driver extension (if not already installed)
+# Install NVIDIA GPU driver extension if GPU is enabled
+if [[ "$ENABLE_GPU" == "true" ]]; then
+  extension_status=$(az vm extension list --resource-group "$RESOURCE_GROUP" --vm-name "$VM_NAME" --query "[?name=='NvidiaGpuDriverLinux'].properties.provisioningState" -o tsv || true)
 
-extension_status=$(az vm extension list --resource-group "$RESOURCE_GROUP" --vm-name "$VM_NAME" --query "[?name=='NvidiaDriverLinux'].properties.provisioningState" -o tsv || true)
+  if [[ "$extension_status" == "Succeeded" ]]; then
+    echo "[INFO] NVIDIA driver extension already installed. Skipping installation."
+  else
+    echo "[INFO] Installing NVIDIA GPU driver extension on $VM_NAME ..."
+    run_cmd "Install NVIDIA GPU driver extension" \
+      az vm extension set \
+        --publisher Microsoft.HpcCompute \
+        --name NvidiaGpuDriverLinux \
+        --version 1.10 \
+        --resource-group "$RESOURCE_GROUP" \
+        --vm-name "$VM_NAME" \
+        --settings '{}' \
+        --output none
 
-if [[ "$extension_status" == "Succeeded" ]]; then
-  echo "[INFO] NVIDIA driver extension already installed. Skipping installation."
+    # Wait for the extension to finish provisioning
+    echo "[INFO] Waiting for NVIDIA driver extension provisioning ..."
+    timeout=1800  # 30 minutes
+    elapsed=0
+    while [[ $elapsed -lt $timeout ]]; do
+      status=$(az vm extension show --resource-group "$RESOURCE_GROUP" --vm-name "$VM_NAME" --name NvidiaGpuDriverLinux --query "provisioningState" -o tsv 2>/dev/null || echo "Unknown")
+      if [[ "$status" == "Succeeded" ]]; then
+        echo "[INFO] GPU driver installation completed."
+        break
+      elif [[ "$status" == "Failed" ]]; then
+        echo "[ERROR] GPU driver installation failed." >&2
+        exit 1
+      fi
+      echo "[INFO] Extension status: $status (waiting...)"
+      sleep 30
+      elapsed=$((elapsed + 30))
+    done
+    
+    if [[ $elapsed -ge $timeout ]]; then
+      echo "[ERROR] GPU driver installation timed out." >&2
+      exit 1
+    fi
+  fi
 else
-  echo "[INFO] Installing NVIDIA GPU driver extension on $VM_NAME ..."
-  run_cmd "Install NVIDIA GPU driver extension" \
-    az vm extension set \
-      --publisher Microsoft.HpcCompute \
-      --name NvidiaDriverLinux \
-      --version 1.4 \
-      --resource-group "$RESOURCE_GROUP" \
-      --vm-name "$VM_NAME" \
-      --settings '{}' \
-      --output none
-
-  # Wait for the extension to finish provisioning
-  echo "[INFO] Waiting for NVIDIA driver extension provisioning ..."
-  run_cmd "Wait for driver extension to succeed" \
-    az resource wait --resource-group "$RESOURCE_GROUP" \
-      --name "NvidiaDriverLinux" \
-      --namespace Microsoft.Compute \
-      --resource-type virtualMachines/extensions \
-      --resource-name "$VM_NAME/NvidiaDriverLinux" \
-      --custom "properties.provisioningState=='Succeeded'"
-  echo "[INFO] GPU driver installation completed."
+  echo "[INFO] Skipping NVIDIA driver installation (GPU not enabled)"
 fi
 
-# Prepare in-VM container runtime setup using run-command (no manual SSH is necessary)
-echo "[INFO] Running container runtime setup in $VM_NAME via RunCommand..."
-
-# Create temporary directory for local files
-tmp_dir=$(mktemp -d)
-cat > "$tmp_dir/gpu-setup.sh" <<'INNERSCRIPT'
-#!/bin/bash
-set -euo pipefail
-
-# Update and install required packages: Moby Engine, CLI, and jq
-sudo apt-get update
-sudo apt-get install -y moby-engine moby-cli jq
-
-# Install NVIDIA container toolkit for enabling GPU in Docker containers
-. /etc/os-release
-DISTRIB="${ID}${VERSION_ID}"
-sudo curl -s -L https://nvidia.github.io/libnvidia-container/gpgkey | sudo apt-key add -
-sudo curl -s -L https://nvidia.github.io/libnvidia-container/ubuntu${DISTRIB}/nvidia-docker.list | \
-  sudo tee /etc/apt/sources.list.d/nvidia-container.list > /dev/null
-sudo apt-get update
-sudo apt-get install -y nvidia-container-toolkit
-
-# Restart Docker to apply runtime changes
-sudo systemctl restart docker
-INNERSCRIPT
-
-# Execute setup script inside VM using az vm run-command
-run_cmd "Install Moby & NVIDIA container runtime in VM" \
-  az vm run-command invoke \
-    --command-id RunShellScript \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$VM_NAME" \
-    --scripts @"$tmp_dir/gpu-setup.sh" \
-    --output none
-
-# Cleanup temporary script and directory
-rm -rf "$tmp_dir"
+# NOTE: We do NOT install Docker here because it doesn't persist through generalization.
+# Docker will be installed via the Batch pool start task instead.
+echo "[INFO] Skipping Docker installation (will be installed via Batch start task)"
 
 # Deallocate and generalize the VM
 echo "[INFO] Deallocating VM $VM_NAME ..."
 run_cmd "Deallocate VM" \
-  az vm deallocate --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --no-wait
-run_cmd "Wait for VM to deallocate" \
-  az vm wait --deallocated --resource-group "$RESOURCE_GROUP" --name "$VM_NAME"
+  az vm deallocate --resource-group "$RESOURCE_GROUP" --name "$VM_NAME"
 
 echo "[INFO] Generalizing VM $VM_NAME ..."
 run_cmd "Generalize VM" \
   az vm generalize --resource-group "$RESOURCE_GROUP" --name "$VM_NAME"
 
-# Create a managed image from the generalized VM
-echo "[INFO] Creating managed image $CUSTOM_IMAGE_NAME ..."
-run_cmd "Create managed image" \
-  az image create --resource-group "$RESOURCE_GROUP" --name "$CUSTOM_IMAGE_NAME" \
-    --source "$VM_NAME" --os-type Linux --output none
+# Create Shared Image Gallery (required for Azure Batch)
+echo "[INFO] Creating Shared Image Gallery $GALLERY_NAME ..."
+if az sig show --resource-group "$RESOURCE_GROUP" --gallery-name "$GALLERY_NAME" &> /dev/null; then
+  echo "[INFO] Shared Image Gallery $GALLERY_NAME already exists."
+else
+  run_cmd "Create Shared Image Gallery" \
+    az sig create \
+      --resource-group "$RESOURCE_GROUP" \
+      --gallery-name "$GALLERY_NAME" \
+      --location "$LOCATION" \
+      --output none
+fi
 
-echo "[INFO] Managed image $CUSTOM_IMAGE_NAME created."
+# Create Image Definition in the gallery
+echo "[INFO] Creating image definition $IMAGE_DEFINITION_NAME ..."
+if az sig image-definition show --resource-group "$RESOURCE_GROUP" --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMAGE_DEFINITION_NAME" &> /dev/null; then
+  echo "[INFO] Image definition $IMAGE_DEFINITION_NAME already exists."
+else
+  run_cmd "Create image definition" \
+    az sig image-definition create \
+      --resource-group "$RESOURCE_GROUP" \
+      --gallery-name "$GALLERY_NAME" \
+      --gallery-image-definition "$IMAGE_DEFINITION_NAME" \
+      --publisher "$IMAGE_PUBLISHER" \
+      --offer "$IMAGE_OFFER" \
+      --sku "$IMAGE_SKU" \
+      --os-type Linux \
+      --os-state Generalized \
+      --hyper-v-generation "$HYPERV_GENERATION" \
+      --output none
+fi
+
+# Create Image Version from the generalized VM
+echo "[INFO] Creating image version $IMAGE_VERSION from VM $VM_NAME ..."
+VM_ID=$(az vm show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query id -o tsv)
+run_cmd "Create image version" \
+  az sig image-version create \
+    --resource-group "$RESOURCE_GROUP" \
+    --gallery-name "$GALLERY_NAME" \
+    --gallery-image-definition "$IMAGE_DEFINITION_NAME" \
+    --gallery-image-version "$IMAGE_VERSION" \
+    --target-regions "$LOCATION" \
+    --managed-image "$VM_ID" \
+    --output none
+
+echo "[INFO] Shared Image Gallery image version created: $GALLERY_NAME/$IMAGE_DEFINITION_NAME/$IMAGE_VERSION"
 
 # Create Batch account if not existing
 if az batch account show --name "$BATCH_ACCOUNT_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
@@ -222,31 +260,74 @@ echo "[INFO] Setting current Batch account context for $BATCH_ACCOUNT_NAME ..."
 run_cmd "Set Batch account context" \
   az batch account set --name "$BATCH_ACCOUNT_NAME" --resource-group "$RESOURCE_GROUP"
 
-# Retrieve image ID for the custom image
-IMAGE_ID="$(run_cmd "Retrieve image ID" az image show --resource-group "$RESOURCE_GROUP" --name "$CUSTOM_IMAGE_NAME" --query id -o tsv)"
+# Retrieve image ID from Shared Image Gallery
+IMAGE_ID="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Compute/galleries/$GALLERY_NAME/images/$IMAGE_DEFINITION_NAME/versions/$IMAGE_VERSION"
+echo "[INFO] Using image: $IMAGE_ID"
+
+# Create start task script that installs Docker and NVIDIA container toolkit (if GPU enabled)
+START_TASK_SCRIPT="/bin/bash -c '"
+START_TASK_SCRIPT+="set -euo pipefail; "
+START_TASK_SCRIPT+="echo Installing Docker...; "
+START_TASK_SCRIPT+="apt-get update -y && apt-get install -y moby-engine moby-cli; "
+
+if [[ "$ENABLE_GPU" == "true" ]]; then
+  START_TASK_SCRIPT+="echo Installing NVIDIA container toolkit...; "
+  START_TASK_SCRIPT+="distribution=\$(. /etc/os-release;echo \$ID\$VERSION_ID); "
+  START_TASK_SCRIPT+="curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg; "
+  START_TASK_SCRIPT+="curl -s -L https://nvidia.github.io/libnvidia-container/\$distribution/libnvidia-container.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list; "
+  START_TASK_SCRIPT+="apt-get update && apt-get install -y nvidia-container-toolkit; "
+  START_TASK_SCRIPT+="systemctl restart docker; "
+  START_TASK_SCRIPT+="echo Waiting for GPU...; "
+  START_TASK_SCRIPT+="until nvidia-smi >/dev/null 2>&1; do sleep 5; done; "
+  START_TASK_SCRIPT+="nvidia-smi; "
+fi
+
+START_TASK_SCRIPT+="docker --version; "
+START_TASK_SCRIPT+="echo Batch node ready"
+START_TASK_SCRIPT+="'"
 
 echo "[INFO] Creating Batch pool $BATCH_POOL_ID with VM size $VM_SIZE ..."
+
+# Create a JSON configuration for the pool
+POOL_JSON=$(mktemp)
+cat > "$POOL_JSON" <<EOF
+{
+  "id": "$BATCH_POOL_ID",
+  "vmSize": "$VM_SIZE",
+  "virtualMachineConfiguration": {
+    "imageReference": {
+      "virtualMachineImageId": "$IMAGE_ID"
+    },
+    "nodeAgentSKUId": "$NODE_AGENT_SKU"
+  },
+  "targetDedicatedNodes": 1,
+  "startTask": {
+    "commandLine": $START_TASK_SCRIPT,
+    "waitForSuccess": true,
+    "userIdentity": {
+      "autoUser": {
+        "scope": "pool",
+        "elevationLevel": "admin"
+      }
+    },
+    "maxTaskRetryCount": 0
+  }
+}
+EOF
+
+# Create the pool using the JSON configuration
 run_cmd "Create Batch pool" \
-  az batch pool create \
-    --id "$BATCH_POOL_ID" \
-    --vm-size "$VM_SIZE" \
-    --image "$IMAGE_ID" \
-    --image-type managed \
-    --node-agent-sku-id "$NODE_AGENT_SKU" \
-    --target-dedicated-nodes 1 \
-    --container-configuration type=dockerCompatible containerImageNames="$CONTAINER_IMAGE" \
-    --output none
+  az batch pool create --json-file "$POOL_JSON"
 
-echo "[INFO] Batch pool $BATCH_POOL_ID created. Adding start task ..."
+# Cleanup temp file
+rm -f "$POOL_JSON"
 
-run_cmd "Configure start task" \
-  az batch pool set \
-    --pool-id "$BATCH_POOL_ID" \
-    --start-task-command-line "/bin/bash -c 'until nvidia-smi >/dev/null 2>&1; do echo Waiting for GPU; sleep 5; done'" \
-    --start-task-wait-for-success true \
-    --start-task-user-identity autoUser \
-    --output none
-
-echo "[INFO] Start task configured. Batch pool is ready for GPU-enabled container jobs. See $LOG_FILE for full logs."
+echo "[INFO] Batch pool $BATCH_POOL_ID created and configured."
+if [[ "$ENABLE_GPU" == "true" ]]; then
+  echo "[INFO] Pool is ready for GPU-enabled container workloads."
+else
+  echo "[INFO] Pool is ready for CPU container workloads."
+fi
+echo "[INFO] Full logs available at: $LOG_FILE"
 
 # End of script
