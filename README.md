@@ -291,6 +291,81 @@ az sig delete --resource-group my-batch-rg --gallery-name batchImageGallery
 az vm delete --resource-group my-batch-rg --name batch-custom-vm --yes
 ```
 
+## Preload Images Feature
+
+### Overview
+The script supports preloading Docker images into your custom VM image, which significantly reduces task startup time and network costs for containerized workloads.
+
+### How It Works
+When enabled, the script will:
+1. Create an Azure Container Registry (ACR)
+2. Build your Docker image using `az acr build`
+3. Push the image to ACR
+4. Pull the image onto the VM before generalization
+5. Configure the Batch pool with container support
+
+### Configuration Variables
+
+- **CREATE_ACR** (default: `false`) - Create Azure Container Registry
+- **BUILD_DOCKER_IMAGE** (default: `false`) - Build and push Docker image to ACR
+- **PRELOAD_IMAGES** (default: `false`) - Preload Docker image on VM before generalization
+- **ACR_NAME** - Name for the ACR (auto-generated with random suffix)
+- **ACR_SKU** - ACR tier: Basic, Standard, or Premium (default: `Basic`)
+- **DOCKER_IMAGE_NAME** - Docker image name (default: `batch-gpu-pytorch`)
+- **DOCKER_IMAGE_TAG** - Docker image tag (default: `latest`)
+
+### Usage Examples
+
+#### Example 1: Create image with preloaded Docker container
+
+```bash
+CREATE_ACR=true
+BUILD_DOCKER_IMAGE=true
+PRELOAD_IMAGES=true
+ENABLE_GPU=true
+
+./batch-prep.sh
+```
+
+This will:
+1. Create an ACR
+2. Build the Docker image from Dockerfile.gpu.ubuntu (or Dockerfile.gpu.almalinux based on BASE_OS)
+3. Push the image to ACR
+4. Pull the image onto the VM
+5. Create the custom VM image with Docker image cached
+6. Create a Batch pool configured to use the preloaded container
+
+#### Example 2: Use existing ACR
+
+```bash
+CREATE_ACR=false
+BUILD_DOCKER_IMAGE=false
+PRELOAD_IMAGES=true
+CONTAINER_IMAGE="myacr.azurecr.io/myimage:latest"
+
+./batch-prep.sh
+```
+
+### Benefits
+
+- **Faster task startup**: No need to pull large images from ACR on each node
+- **Reduced network costs**: Images pulled once during image creation
+- **Better for GPU workloads**: Large ML/AI images (PyTorch, TensorFlow, etc.) are pre-cached
+- **Consistent environment**: Same image version across all pool nodes
+
+### Pool Container Configuration
+
+When `PRELOAD_IMAGES=true`, the Batch pool is automatically configured with:
+
+```json
+"containerConfiguration": {
+  "type": "dockerCompatible",
+  "containerImageNames": ["<ACR_IMAGE_URL>"]
+}
+```
+
+This makes the preloaded image available to tasks running on pool nodes.
+
 ## Troubleshooting
 
 ### Azure CLI not found
