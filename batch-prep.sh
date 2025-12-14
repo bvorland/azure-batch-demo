@@ -655,18 +655,19 @@ python3 << 'PYTHON_EOF' > "$POOL_JSON"
 import json
 import os
 
+# Clean up any whitespace/newlines in the environment variables
 pool_config = {
-    "id": os.environ["POOL_ID"],
-    "vmSize": os.environ["POOL_VM_SIZE"],
+    "id": os.environ["POOL_ID"].strip(),
+    "vmSize": os.environ["POOL_VM_SIZE"].strip(),
     "virtualMachineConfiguration": {
         "imageReference": {
-            "virtualMachineImageId": os.environ["POOL_IMAGE_ID"]
+            "virtualMachineImageId": os.environ["POOL_IMAGE_ID"].strip()
         },
-        "nodeAgentSKUId": os.environ["POOL_NODE_AGENT"]
+        "nodeAgentSKUId": os.environ["POOL_NODE_AGENT"].strip()
     },
     "targetDedicatedNodes": 1,
     "startTask": {
-        "commandLine": os.environ["POOL_START_TASK"],
+        "commandLine": os.environ["POOL_START_TASK"].strip(),
         "waitForSuccess": True,
         "userIdentity": {
             "autoUser": {
@@ -693,11 +694,11 @@ if ! python3 -m json.tool "$POOL_JSON" > /dev/null 2>&1; then
   echo "[WARN] JSON validation failed, but continuing anyway..."
 fi
 
-# Create the pool using the JSON configuration with explicit account details
+# Create the pool using the JSON configuration
+# Use account-name parameter (context should already be set)
 run_cmd "Create Batch pool" \
   az batch pool create \
     --account-name "$BATCH_ACCOUNT_NAME" \
-    --resource-group "$RESOURCE_GROUP" \
     --json-file "$POOL_JSON"
 
 # Cleanup temp file
