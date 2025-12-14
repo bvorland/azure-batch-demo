@@ -645,22 +645,28 @@ echo "[INFO] Creating Batch pool $BATCH_POOL_ID with VM size $VM_SIZE ..."
 # This avoids WSL /tmp path translation issues
 POOL_JSON="./pool_config_${BATCH_POOL_ID}.json"
 
-# Use Python to properly create the JSON to handle escaping correctly
-python3 << PYTHON_EOF > "$POOL_JSON"
+# Use Python to properly create the JSON - pass values as environment variables
+POOL_ID="$BATCH_POOL_ID" \
+POOL_VM_SIZE="$VM_SIZE" \
+POOL_IMAGE_ID="$IMAGE_ID" \
+POOL_NODE_AGENT="$NODE_AGENT_SKU" \
+POOL_START_TASK="$START_TASK_SCRIPT" \
+python3 << 'PYTHON_EOF' > "$POOL_JSON"
 import json
+import os
 
 pool_config = {
-    "id": "$BATCH_POOL_ID",
-    "vmSize": "$VM_SIZE",
+    "id": os.environ["POOL_ID"],
+    "vmSize": os.environ["POOL_VM_SIZE"],
     "virtualMachineConfiguration": {
         "imageReference": {
-            "virtualMachineImageId": "$IMAGE_ID"
+            "virtualMachineImageId": os.environ["POOL_IMAGE_ID"]
         },
-        "nodeAgentSKUId": "$NODE_AGENT_SKU"
+        "nodeAgentSKUId": os.environ["POOL_NODE_AGENT"]
     },
     "targetDedicatedNodes": 1,
     "startTask": {
-        "commandLine": """$START_TASK_SCRIPT""",
+        "commandLine": os.environ["POOL_START_TASK"],
         "waitForSuccess": True,
         "userIdentity": {
             "autoUser": {
