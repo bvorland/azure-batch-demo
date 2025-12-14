@@ -11,7 +11,13 @@ az login
 
 # Check your subscription
 az account show --output table
+
+# Run pre-validation (recommended)
+cd azure-batch-demo
+./batch-prep.sh --validate
 ```
+
+If validation passes, you're ready to deploy!
 
 ## GPU Workload Setup
 

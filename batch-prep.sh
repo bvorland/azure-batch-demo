@@ -9,6 +9,19 @@
 #   Adjust the variables in the CONFIG section below to customize resource names, VM size, OS image,
 #   admin username, Batch pool details, and container image name. Set ENABLE_GPU=true for GPU workloads.
 #
+# Pre-validation:
+#   The script performs comprehensive pre-validation checks before creating any resources:
+#   - Azure CLI installation and login status
+#   - Required resource providers (Microsoft.Compute, Microsoft.Network, Microsoft.Batch)
+#   - VM size availability in the target region
+#   - Quota availability for the selected VM family
+#   - Permissions to create resources
+#   - Location validity
+#
+# Usage:
+#   ./batch-prep.sh              # Run full deployment
+#   ./batch-prep.sh --validate   # Run pre-validation checks only
+#
 # Logging and Error Handling:
 #   The script logs all output to a log file (named with a timestamp) in the current directory,
 #   and to stdout. A helper function (run_cmd) checks the exit status of critical commands and
@@ -20,6 +33,12 @@
 #   afterward to avoid unwanted costs.
 
 set -euo pipefail
+
+# Check for validation-only mode
+VALIDATE_ONLY=false
+if [[ "${1:-}" == "--validate" ]]; then
+  VALIDATE_ONLY=true
+fi
 
 # ---------------------------
 # CONFIGURATION SECTION
@@ -101,6 +120,152 @@ if ! az account show &> /dev/null; then
 fi
 
 echo "[INFO] Logs will be saved to $LOG_FILE"
+
+# ---------------------------
+# PRE-VALIDATION CHECKS
+# ---------------------------
+echo "[INFO] Running pre-validation checks..."
+
+# Check if Azure CLI is installed
+if ! command -v az &> /dev/null; then
+  echo "[ERROR] Azure CLI (az) is not installed. Please install it from https://aka.ms/InstallAzureCLI" >&2
+  exit 1
+fi
+echo "[INFO] ✓ Azure CLI is installed"
+
+# Check if logged in to Azure
+if ! az account show &> /dev/null; then
+  echo "[ERROR] You must be logged in to Azure CLI. Run 'az login' first." >&2
+  exit 1
+fi
+
+# Get current subscription info
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+SUBSCRIPTION_NAME=$(az account show --query name -o tsv)
+echo "[INFO] ✓ Logged in to Azure"
+echo "[INFO]   Subscription: $SUBSCRIPTION_NAME"
+echo "[INFO]   Subscription ID: $SUBSCRIPTION_ID"
+
+# Check required resource providers
+echo "[INFO] Checking required resource providers..."
+REQUIRED_PROVIDERS=("Microsoft.Compute" "Microsoft.Network" "Microsoft.Batch")
+UNREGISTERED_PROVIDERS=()
+
+for provider in "${REQUIRED_PROVIDERS[@]}"; do
+  state=$(az provider show --namespace "$provider" --query "registrationState" -o tsv 2>/dev/null | tr -d '\r' | xargs)
+  if [[ "$state" == "Registered" ]]; then
+    echo "[INFO] ✓ $provider is registered"
+  else
+    UNREGISTERED_PROVIDERS+=("$provider")
+    echo "[WARN] Resource provider $provider needs registration (state: $state)"
+  fi
+done
+
+# Register unregistered providers if needed
+if [[ ${#UNREGISTERED_PROVIDERS[@]} -gt 0 ]]; then
+  echo "[INFO] Registering unregistered resource providers..."
+  for provider in "${UNREGISTERED_PROVIDERS[@]}"; do
+    echo "[INFO] Registering $provider (this may take 1-2 minutes)..."
+    az provider register --namespace "$provider" --wait
+    echo "[INFO] ✓ $provider registered successfully"
+  done
+fi
+
+# Check VM size availability in the region
+echo "[INFO] Checking VM size availability in $LOCATION..."
+vm_available=$(az vm list-skus --location "$LOCATION" --size "$VM_SIZE" --all --query "[?name=='$VM_SIZE' && !restrictions]" -o tsv 2>/dev/null)
+if [[ -z "$vm_available" ]]; then
+  echo "[ERROR] VM size $VM_SIZE is not available in region $LOCATION or has restrictions" >&2
+  echo "[INFO] Checking restrictions..." >&2
+  restrictions=$(az vm list-skus --location "$LOCATION" --size "$VM_SIZE" --all --query "[?name=='$VM_SIZE'].restrictions" -o json 2>/dev/null)
+  if [[ "$restrictions" != "[]" && "$restrictions" != "" ]]; then
+    echo "[ERROR] VM size restrictions: $restrictions" >&2
+  fi
+  echo "[INFO] Run this command to check available sizes: az vm list-sizes --location $LOCATION --output table" >&2
+  exit 1
+fi
+echo "[INFO] ✓ VM size $VM_SIZE is available in $LOCATION"
+
+# Check quota for the VM family
+if [[ "$ENABLE_GPU" == "true" ]]; then
+  echo "[INFO] Checking GPU quota for $VM_SIZE..."
+  
+  # Determine quota family based on VM size
+  if [[ "$VM_SIZE" == *"NC4as_T4"* || "$VM_SIZE" == *"NC8as_T4"* || "$VM_SIZE" == *"NC16as_T4"* || "$VM_SIZE" == *"NC64as_T4"* ]]; then
+    QUOTA_FAMILY="NCASv3_T4"
+  elif [[ "$VM_SIZE" == *"NC6s_v3"* || "$VM_SIZE" == *"NC12s_v3"* || "$VM_SIZE" == *"NC24s_v3"* ]]; then
+    QUOTA_FAMILY="NCSv3"
+  elif [[ "$VM_SIZE" == *"NC"* ]]; then
+    QUOTA_FAMILY="NC"
+  else
+    QUOTA_FAMILY="Standard"
+  fi
+  
+  quota_info=$(az vm list-usage --location "$LOCATION" --query "[?contains(name.value, '$QUOTA_FAMILY')].{Name:name.localizedValue, Current:currentValue, Limit:limit}" -o json 2>/dev/null)
+  quota_limit=$(echo "$quota_info" | jq -r '.[0].Limit // "0"' 2>/dev/null)
+  
+  if [[ "$quota_limit" == "0" || -z "$quota_limit" ]]; then
+    echo "[ERROR] No quota available for $QUOTA_FAMILY family in $LOCATION" >&2
+    echo "[ERROR] Current quota limit: $quota_limit" >&2
+    echo "[INFO] Request a quota increase:" >&2
+    echo "[INFO]   1. Go to Azure Portal > Quotas" >&2
+    echo "[INFO]   2. Search for 'Standard $QUOTA_FAMILY Family vCPUs'" >&2
+    echo "[INFO]   3. Request an increase for region $LOCATION" >&2
+    echo "[INFO] Or run: az vm list-usage --location $LOCATION --query \"[?contains(name.value, 'NC')]\" -o table" >&2
+    exit 1
+  fi
+  echo "[INFO] ✓ GPU quota available: $quota_limit vCPUs for $QUOTA_FAMILY family"
+else
+  echo "[INFO] Skipping GPU quota check (ENABLE_GPU=false)"
+fi
+
+# Check permissions to create resources in the subscription
+echo "[INFO] Checking permissions to create resources..."
+user_email=$(az account show --query user.name -o tsv 2>/dev/null | tr -d '\r' | xargs)
+if [[ -n "$user_email" ]]; then
+  role_check=$(az role assignment list --assignee "$user_email" --query "[?contains(roleDefinitionName, 'Contributor') || contains(roleDefinitionName, 'Owner')].roleDefinitionName" -o tsv 2>/dev/null | tr -d '\r' | head -1 | xargs)
+  if [[ -z "$role_check" ]]; then
+    echo "[WARN] Could not verify Contributor/Owner role. You may encounter permission errors."
+  else
+    echo "[INFO] ✓ Sufficient permissions detected: $role_check"
+  fi
+else
+  echo "[WARN] Could not determine user identity. Skipping permission check."
+fi
+
+# Verify the location is valid
+echo "[INFO] Verifying location $LOCATION..."
+location_valid=$(az account list-locations --query "[?name=='$LOCATION'].name" -o tsv)
+if [[ -z "$location_valid" ]]; then
+  echo "[ERROR] Location '$LOCATION' is not valid" >&2
+  echo "[INFO] Run this command to see valid locations: az account list-locations --query '[].name' -o table" >&2
+  exit 1
+fi
+echo "[INFO] ✓ Location $LOCATION is valid"
+
+# Check if Batch provider is registered (required for Batch account creation)
+batch_provider_state=$(az provider show --namespace "Microsoft.Batch" --query "registrationState" -o tsv 2>/dev/null)
+if [[ "$batch_provider_state" != "Registered" ]]; then
+  echo "[INFO] Registering Microsoft.Batch provider..."
+  az provider register --namespace "Microsoft.Batch" --wait
+  echo "[INFO] ✓ Microsoft.Batch provider registered"
+fi
+
+echo "[INFO] ✓ All pre-validation checks passed"
+
+# Exit if validation-only mode
+if [[ "$VALIDATE_ONLY" == "true" ]]; then
+  echo ""
+  echo "=========================================="
+  echo "VALIDATION SUCCESSFUL"
+  echo "=========================================="
+  echo "All prerequisites are met. You can now run the script without --validate to create resources."
+  echo ""
+  exit 0
+fi
+
+echo "[INFO] Starting resource provisioning..."
+echo ""
 
 echo "[INFO] Using VM size: $VM_SIZE"
 

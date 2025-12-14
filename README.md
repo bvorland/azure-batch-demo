@@ -21,7 +21,9 @@ All VM configuration is done using Azure CLI's `az vm run-command` and VM extens
 - Active Azure subscription
 - Bash shell (Linux, macOS, or WSL on Windows)
 - Sufficient Azure quota for your target VM size in your region
-- Appropriate permissions to create Azure resources
+- Appropriate permissions to create resources (Contributor or Owner role)
+
+**Pro Tip**: Run `./batch-prep.sh --validate` first to verify all prerequisites are met before creating any resources.
 
 ## Installation
 
@@ -85,6 +87,26 @@ CONTAINER_IMAGE="ubuntu:22.04"
 ```
 
 ## Usage
+
+### Pre-validation (Recommended)
+
+Before running the full script, it's recommended to validate your environment:
+
+```bash
+./batch-prep.sh --validate
+```
+
+This will check:
+- Azure CLI installation and login status
+- Required resource providers (automatically registers if needed)
+- VM size availability in your target region
+- Quota availability for your selected VM family  
+- Permissions to create resources
+- Location validity
+
+If validation passes, you'll see "VALIDATION SUCCESSFUL" and can proceed with deployment.
+
+### Full Deployment
 
 1. Login to Azure CLI:
    ```bash
