@@ -70,7 +70,7 @@ else
   exit 1
 fi
 
-RESOURCE_GROUP="batch-pool-test"         # Azure Resource Group name
+RESOURCE_GROUP="batch-pool-verify"       # Azure Resource Group name
 LOCATION="swedencentral"                # Azure region (e.g., eastus2, westeurope, southcentralus)
 
 # GPU Configuration
@@ -693,9 +693,12 @@ if ! python3 -m json.tool "$POOL_JSON" > /dev/null 2>&1; then
   echo "[WARN] JSON validation failed, but continuing anyway..."
 fi
 
-# Create the pool using the JSON configuration
+# Create the pool using the JSON configuration with explicit account details
 run_cmd "Create Batch pool" \
-  az batch pool create --json-file "$POOL_JSON"
+  az batch pool create \
+    --account-name "$BATCH_ACCOUNT_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --json-file "$POOL_JSON"
 
 # Cleanup temp file
 rm -f "$POOL_JSON"
