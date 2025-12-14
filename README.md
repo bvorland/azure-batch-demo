@@ -335,7 +335,28 @@ When `PRELOAD_IMAGES=true`, the Batch pool is automatically configured with:
 }
 ```
 
-This makes the preloaded image available to tasks running on pool nodes.
+**Why both preload AND containerConfiguration?**
+
+1. **Preloading** (during image creation): Downloads the Docker image and bakes it into the VM image
+   - Benefit: Image is already on disk when pool nodes start up
+   - Result: No network pull needed, faster task startup
+
+2. **containerConfiguration** (in pool config): Registers the image with Azure Batch
+   - Benefit: Enables use of Batch's native `containerSettings` in tasks
+   - Result: Cleaner task definitions, better Batch integration
+
+Without containerConfiguration, you'd need to use `docker run` commands directly. With it, you can use:
+
+```json
+{
+  "commandLine": "python train.py",
+  "containerSettings": {
+    "imageName": "myacr.azurecr.io/myapp:v1"
+  }
+}
+```
+
+This combines the speed of preloading with the convenience of Batch's container features.
 
 ## Troubleshooting
 

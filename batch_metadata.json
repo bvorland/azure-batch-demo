@@ -1,0 +1,12 @@
+{
+  "batchAccount": "mybatch12238",
+  "poolId": "my-pool",
+  "imageId": "/subscriptions/e8c66e29-01cf-4b61-932d-24ef93893150/resourceGroups/batch-pool-verify/providers/Microsoft.Compute/galleries/batchImageGallery/images/batchCustomImage/versions/1.0.0",
+  "vmSize": "Standard_D2s_v3",
+  "nodeCount": 1,
+  "location": "swedencentral",
+  "gpuEnabled": false,
+  "baseOS": "ubuntu",
+  "createdAt": "2025-12-14T18:24:28Z",
+  "resourceGroup": "batch-pool-verify"
+}

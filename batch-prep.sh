@@ -794,6 +794,11 @@ create_batch_workflow() {
   echo "[INFO] Creating pool configuration..."
 
   # Build container configuration if PRELOAD_IMAGES is enabled
+  # Note: Even though the image is preloaded (baked into VM image), we still need
+  # containerConfiguration to register the image with Azure Batch. This enables:
+  # 1. Tasks to use containerSettings (cleaner than "docker run" commands)
+  # 2. Batch to recognize the image is available (no re-pull needed)
+  # 3. Better integration with Batch's native container support
   CONTAINER_CONFIG=""
   if [[ "$PRELOAD_IMAGES" == "true" ]]; then
     CONTAINER_CONFIG=',
