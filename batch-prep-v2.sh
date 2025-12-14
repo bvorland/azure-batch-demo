@@ -415,6 +415,84 @@ run_prevalidation_checks() {
 }
 
 # ---------------------------
+# DOCKER AND ACR FUNCTIONS
+# ---------------------------
+
+# Create ACR and build Docker image
+setup_container_registry() {
+  if [[ "$CREATE_ACR" != "true" ]]; then
+    return
+  fi
+
+  echo ""
+  echo "[INFO] Setting up Azure Container Registry..."
+
+  # Create ACR
+  if ! az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
+    echo "[INFO] Creating Azure Container Registry: $ACR_NAME..."
+    run_cmd "Create ACR" \
+      az acr create \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$ACR_NAME" \
+        --sku "$ACR_SKU" \
+        --admin-enabled true \
+        --output none
+  else
+    echo "[INFO] ACR $ACR_NAME already exists"
+  fi
+
+  # Build and push Docker image if requested
+  if [[ "$BUILD_DOCKER_IMAGE" == "true" ]]; then
+    echo "[INFO] Building Docker image..."
+
+    if [[ ! -f "$DOCKERFILE" ]]; then
+      echo "[ERROR] Dockerfile not found: $DOCKERFILE" >&2
+      exit 1
+    fi
+
+    run_cmd "Build and push Docker image" \
+      az acr build \
+        --registry "$ACR_NAME" \
+        --image "${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}" \
+        --file "$DOCKERFILE" \
+        .
+
+    echo "[SUCCESS] Docker image built and pushed to ACR"
+
+    # Update CONTAINER_IMAGE variable
+    CONTAINER_IMAGE="${ACR_NAME}.azurecr.io/${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+    echo "[INFO] Container image: $CONTAINER_IMAGE"
+  fi
+}
+
+# Preload Docker images on VM
+preload_docker_images() {
+  if [[ "$PRELOAD_IMAGES" != "true" || "$CREATE_ACR" != "true" || "$BUILD_DOCKER_IMAGE" != "true" ]]; then
+    return
+  fi
+
+  echo ""
+  echo "[INFO] Preloading Docker image on VM..."
+
+  # Get ACR credentials
+  ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query "username" -o tsv)
+  ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
+
+  # Login to ACR and pull image
+  PRELOAD_SCRIPT="sudo docker login ${ACR_NAME}.azurecr.io -u ${ACR_USERNAME} -p ${ACR_PASSWORD} && sudo docker pull ${CONTAINER_IMAGE}"
+
+  run_cmd "Preload Docker image" \
+    az vm run-command invoke \
+      --resource-group "$RESOURCE_GROUP" \
+      --name "$VM_NAME" \
+      --command-id RunShellScript \
+      --scripts "$PRELOAD_SCRIPT" \
+      --output none
+
+  echo "[SUCCESS] Docker image preloaded on VM"
+}
+
+# ---------------------------
 # WORKFLOW FUNCTIONS
 # ---------------------------
 
@@ -521,6 +599,12 @@ create_image_workflow() {
       --output none
   
   echo "[SUCCESS] Docker installed"
+
+  # Setup ACR and build Docker image if requested
+  setup_container_registry
+
+  # Preload Docker images if requested
+  preload_docker_images
   
   # Deallocate and generalize VM
   echo "[INFO] Deallocating VM..."
@@ -670,6 +754,17 @@ create_batch_workflow() {
   fi
   
   echo "[INFO] Creating pool configuration..."
+
+  # Build container configuration if PRELOAD_IMAGES is enabled
+  CONTAINER_CONFIG=""
+  if [[ "$PRELOAD_IMAGES" == "true" ]]; then
+    CONTAINER_CONFIG=',
+    "containerConfiguration": {
+      "type": "dockerCompatible",
+      "containerImageNames": ["'"$CONTAINER_IMAGE"'"]
+    }'
+  fi
+
   cat > "$POOL_JSON" << EOF
 {
   "id": "$BATCH_POOL_ID",
@@ -678,7 +773,7 @@ create_batch_workflow() {
     "imageReference": {
       "virtualMachineImageId": "$IMAGE_ID"
     },
-    "nodeAgentSKUId": "$NODE_AGENT_SKU"
+    "nodeAgentSKUId": "$NODE_AGENT_SKU"${CONTAINER_CONFIG}
   },
   "targetDedicatedNodes": $OVERRIDE_NODE_COUNT,
   "startTask": {
