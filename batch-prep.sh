@@ -70,7 +70,7 @@ else
   exit 1
 fi
 
-RESOURCE_GROUP="batch-e2e-test-simple"   # Azure Resource Group name
+RESOURCE_GROUP="batch-pool-test"         # Azure Resource Group name
 LOCATION="swedencentral"                # Azure region (e.g., eastus2, westeurope, southcentralus)
 
 # GPU Configuration
@@ -645,30 +645,35 @@ echo "[INFO] Creating Batch pool $BATCH_POOL_ID with VM size $VM_SIZE ..."
 # This avoids WSL /tmp path translation issues
 POOL_JSON="./pool_config_${BATCH_POOL_ID}.json"
 
-cat > "$POOL_JSON" <<EOF
-{
-  "id": "$BATCH_POOL_ID",
-  "vmSize": "$VM_SIZE",
-  "virtualMachineConfiguration": {
-    "imageReference": {
-      "virtualMachineImageId": "$IMAGE_ID"
+# Use Python to properly create the JSON to handle escaping correctly
+python3 << PYTHON_EOF > "$POOL_JSON"
+import json
+
+pool_config = {
+    "id": "$BATCH_POOL_ID",
+    "vmSize": "$VM_SIZE",
+    "virtualMachineConfiguration": {
+        "imageReference": {
+            "virtualMachineImageId": "$IMAGE_ID"
+        },
+        "nodeAgentSKUId": "$NODE_AGENT_SKU"
     },
-    "nodeAgentSKUId": "$NODE_AGENT_SKU"
-  },
-  "targetDedicatedNodes": 1,
-  "startTask": {
-    "commandLine": $START_TASK_SCRIPT,
-    "waitForSuccess": true,
-    "userIdentity": {
-      "autoUser": {
-        "scope": "pool",
-        "elevationLevel": "admin"
-      }
-    },
-    "maxTaskRetryCount": 0
-  }
+    "targetDedicatedNodes": 1,
+    "startTask": {
+        "commandLine": """$START_TASK_SCRIPT""",
+        "waitForSuccess": True,
+        "userIdentity": {
+            "autoUser": {
+                "scope": "pool",
+                "elevationLevel": "admin"
+            }
+        },
+        "maxTaskRetryCount": 0
+    }
 }
-EOF
+
+print(json.dumps(pool_config, indent=2))
+PYTHON_EOF
 
 # Verify the JSON file was created and is valid
 if [[ ! -f "$POOL_JSON" ]]; then
