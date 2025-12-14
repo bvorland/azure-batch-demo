@@ -1,4 +1,6 @@
-# PRELOAD_IMAGES Feature Summary
+# Preload Images Feature
+
+This document describes the Docker image preloading feature that was added to batch-prep.sh.
 
 ## What Was Added
 
@@ -50,7 +52,7 @@ CREATE_ACR=true \
 BUILD_DOCKER_IMAGE=true \
 PRELOAD_IMAGES=true \
 ENABLE_GPU=true \
-./batch-prep-v2.sh --image-only
+./batch-prep.sh --image-only
 ```
 
 This will:
@@ -66,7 +68,7 @@ After creating the image with PRELOAD_IMAGES=true, create a pool:
 
 ```bash
 PRELOAD_IMAGES=true \
-./batch-prep-v2.sh --batch-only
+./batch-prep.sh --batch-only
 ```
 
 The pool will be configured with containerConfiguration, making the preloaded image available to tasks.
@@ -80,7 +82,7 @@ The pool will be configured with containerConfiguration, making the preloaded im
 
 ## Files Modified
 
-- **batch-prep-v2.sh** - Added Docker/ACR functions and container configuration support
+- **batch-prep.sh** - Added Docker/ACR functions and container configuration support
 
 ## Testing
 

@@ -1,12 +1,12 @@
 #!/bin/bash
-# batch-prep-v2.sh - Modular Azure Batch Setup Script
+# batch-prep.sh - Modular Azure Batch Setup Script
 #
 # This script provides three execution modes for Azure Batch infrastructure:
 #   --image-only: Create VM image only (~20-25 min)
 #   --batch-only: Create Batch pool from existing image (~5-10 min) 
 #   --full: Create both image and Batch infrastructure (default)
 #
-# For detailed documentation, run: ./batch-prep-v2.sh --help
+# For detailed documentation, run: ./batch-prep.sh --help
 
 set -euo pipefail
 
@@ -52,7 +52,7 @@ show_help() {
 Azure Batch Pool Setup Script (Modular Version)
 
 USAGE:
-  ./batch-prep-v2.sh [MODE] [OPTIONS]
+  ./batch-prep.sh [MODE] [OPTIONS]
 
 EXECUTION MODES:
   (default)           Full deployment - create image and Batch infrastructure (~25-30 min)
@@ -73,18 +73,18 @@ OPTIONS:
 
 EXAMPLES:
   # Create base image once (25 min)
-  ./batch-prep-v2.sh --image-only --gpu --os ubuntu
+  ./batch-prep.sh --image-only --gpu --os ubuntu
 
   # Create multiple pools from same image (5 min each)
-  ./batch-prep-v2.sh --batch-only --pool-id dev-pool --vm-size Standard_NC6 --nodes 1
-  ./batch-prep-v2.sh --batch-only --pool-id test-pool --vm-size Standard_NC6 --nodes 2
-  ./batch-prep-v2.sh --batch-only --pool-id prod-pool --vm-size Standard_NC12 --nodes 10
+  ./batch-prep.sh --batch-only --pool-id dev-pool --vm-size Standard_NC6 --nodes 1
+  ./batch-prep.sh --batch-only --pool-id test-pool --vm-size Standard_NC6 --nodes 2
+  ./batch-prep.sh --batch-only --pool-id prod-pool --vm-size Standard_NC12 --nodes 10
 
   # Full deployment (backward compatible)
-  ./batch-prep-v2.sh --gpu --os ubuntu
+  ./batch-prep.sh --gpu --os ubuntu
 
   # Validation only
-  ./batch-prep-v2.sh --validate
+  ./batch-prep.sh --validate
 
 OUTPUT FILES:
   image_metadata.json    - Created by --image-only mode
@@ -162,6 +162,7 @@ configure_os_settings() {
     NODE_AGENT_SKU="batch.node.ubuntu 22.04"
     IMAGE_SKU="Ubuntu2204"
     DOCKERFILE="Dockerfile.gpu.ubuntu"
+    HYPERV_GENERATION="V1"
   elif [[ "$BASE_OS" == "almalinux" ]]; then
     if [[ "$OS_VERSION" == "9" ]]; then
       VM_IMAGE_URN="almalinux:almalinux-x86_64:9-gen2:latest"
@@ -173,6 +174,7 @@ configure_os_settings() {
       IMAGE_SKU="AlmaLinux8"
     fi
     DOCKERFILE="Dockerfile.gpu.almalinux"
+    HYPERV_GENERATION="V2"
   else
     echo "[ERROR] Invalid BASE_OS: $BASE_OS. Must be 'ubuntu' or 'almalinux'" >&2
     exit 1
@@ -192,18 +194,16 @@ configure_os_settings() {
 
 configure_os_settings
 
-HYPERV_GENERATION="V1"
-
 # Create logs directory
 LOG_DIR="./logs"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/batch_prep_v2_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="$LOG_DIR/batch_prep_$(date +%Y%m%d_%H%M%S).log"
 
 # Redirect all output to console and log file
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "=========================================="
-echo "Azure Batch Setup Script (Modular v2)"
+echo "Azure Batch Setup Script"
 echo "=========================================="
 echo "[INFO] Execution mode: $EXECUTION_MODE"
 echo "[INFO] Base OS: $BASE_OS $OS_VERSION"
@@ -867,7 +867,7 @@ if [[ "$EXECUTION_MODE" == "image-only" ]]; then
   echo "[INFO] Next: Use --batch-only mode to create pools"
   echo ""
   echo "Example:"
-  echo "  ./batch-prep-v2.sh --batch-only --pool-id my-pool --nodes 2"
+  echo "  ./batch-prep.sh --batch-only --pool-id my-pool --nodes 2"
 elif [[ "$EXECUTION_MODE" == "batch-only" ]]; then
   echo "[INFO] Batch pool created successfully"
   echo "[INFO] Pool is ready for job submission"

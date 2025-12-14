@@ -128,46 +128,6 @@ CREATE_ACR=false
 BUILD_DOCKER_IMAGE=false
 ```
 
-### Example Configuration
-
-#### Ubuntu 22.04 with GPU:
-```bash
-BASE_OS="ubuntu"
-OS_VERSION="22.04"
-ENABLE_GPU=true
-GPU_VM_SIZE="Standard_NC4as_T4_v3"
-
-# Docker/ACR Configuration
-CREATE_ACR=true
-BUILD_DOCKER_IMAGE=true
-PRELOAD_IMAGES=true
-```
-
-#### AlmaLinux 8 with GPU:
-```bash
-BASE_OS="almalinux"
-OS_VERSION="8"
-ENABLE_GPU=true
-GPU_VM_SIZE="Standard_NC4as_T4_v3"
-
-# Docker/ACR Configuration
-CREATE_ACR=true
-BUILD_DOCKER_IMAGE=true
-PRELOAD_IMAGES=true
-```
-
-#### Ubuntu 22.04 CPU Only:
-```bash
-BASE_OS="ubuntu"
-OS_VERSION="22.04"
-ENABLE_GPU=false
-CPU_VM_SIZE="Standard_D4s_v3"
-
-# Skip Docker image building for CPU
-CREATE_ACR=false
-BUILD_DOCKER_IMAGE=false
-```
-
 ## Usage
 
 ### Pre-validation (Recommended)
