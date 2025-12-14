@@ -449,16 +449,74 @@ az batch pool resize --pool-id myBatchPool --target-dedicated-nodes 5 \
   --account-name mybatchaccount-XXXXX
 ```
 
-### Using Custom Container Images
+### Using Your Own Docker Image
 
-Update the `CONTAINER_IMAGE` variable to prefetch your custom images:
+If you already have a Docker image (in Docker Hub, ACR, or another registry), you can use it with the preload feature:
+
+#### Option 1: Use Existing Image from Azure Container Registry
+
 ```bash
-# Single image
+# Configure to use your existing ACR and image
+CREATE_ACR=false                    # Don't create new ACR
+BUILD_DOCKER_IMAGE=false            # Don't build new image
+PRELOAD_IMAGES=true                 # Enable preloading
+CONTAINER_IMAGE="myacr.azurecr.io/myapp:v1.0"  # Your image
+
+# Run the script
+./batch-prep.sh
+```
+
+The script will:
+1. Pull your image onto the VM during image creation
+2. Configure the Batch pool with container support
+3. Make the image available on all pool nodes
+
+#### Option 2: Use Image from Docker Hub
+
+```bash
+# Configure to use public Docker Hub image
+CREATE_ACR=false
+BUILD_DOCKER_IMAGE=false
+PRELOAD_IMAGES=true
+CONTAINER_IMAGE="pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime"
+
+./batch-prep.sh
+```
+
+#### Option 3: Use Image from Private Registry
+
+If using a private registry, you'll need to handle authentication:
+
+```bash
+# Set your image
+CONTAINER_IMAGE="myregistry.io/myapp:latest"
+PRELOAD_IMAGES=true
+
+# Modify the preload_docker_images() function to include:
+# docker login myregistry.io -u USERNAME -p PASSWORD
+```
+
+#### Important Notes:
+
+- **Image Requirements**: Your image should be compatible with the base OS (Ubuntu or AlmaLinux)
+- **GPU Images**: For GPU workloads, ensure your image has CUDA libraries matching your drivers
+- **Size Considerations**: Large images (>5GB) will take longer to preload but save time across all pool nodes
+- **Registry Access**: Ensure the VM can access your registry (check firewall/network rules)
+
+#### Without Preloading
+
+If you don't want to preload the image (pull on-demand per task):
+
+```bash
+CREATE_ACR=false
+BUILD_DOCKER_IMAGE=false
+PRELOAD_IMAGES=false
 CONTAINER_IMAGE="myregistry.azurecr.io/myapp:latest"
 
-# Multiple images (comma-separated) - requires script modification
-# Add to the pool JSON containerConfiguration section
+./batch-prep.sh
 ```
+
+Tasks will pull the image when first needed. This uses less VM image storage but increases task startup time.
 
 ### Reusing Existing Images
 
