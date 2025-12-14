@@ -64,7 +64,25 @@ Edit the configuration section at the top of the script to customize your deploy
 - **BATCH_ACCOUNT_NAME**: Batch account name (random suffix added automatically)
 - **BATCH_POOL_ID**: Batch pool identifier
 - **NODE_AGENT_SKU**: Batch node agent matching OS (default: `batch.node.ubuntu 22.04`)
-- **CONTAINER_IMAGE**: Docker container image (auto-selected based on GPU setting)
+
+### Container Registry & Docker Configuration
+
+- **CREATE_ACR**: Set to `true` to create Azure Container Registry (default: `true`)
+- **ACR_NAME**: ACR name (alphanumeric only, globally unique, random suffix added)
+- **ACR_SKU**: ACR tier - Basic, Standard, or Premium (default: `Basic`)
+- **BUILD_DOCKER_IMAGE**: Set to `true` to build custom Docker image (default: `true`)
+- **DOCKER_IMAGE_NAME**: Name for the Docker image (default: `batch-gpu-pytorch`)
+- **DOCKER_IMAGE_TAG**: Docker image tag (default: `latest`)
+- **PRELOAD_IMAGES**: Set to `true` to preload Docker images on VM (default: `true`)
+
+When `BUILD_DOCKER_IMAGE=true`, the script will:
+1. Create an Azure Container Registry (if `CREATE_ACR=true`)
+2. Build a GPU-enabled Docker image with PyTorch, OpenCV, OpenSlide, FAISS, and pre-loaded Hugging Face models
+3. Push the image to your ACR
+4. Optionally preload the image on the VM before generalization
+5. Configure the Batch pool to use this image
+
+See [DOCKER.md](DOCKER.md) for details on the Docker image contents.
 
 ### Example Configuration
 
@@ -74,7 +92,11 @@ RESOURCE_GROUP="my-gpu-batch-rg"
 LOCATION="eastus2"
 ENABLE_GPU=true
 GPU_VM_SIZE="Standard_NC4as_T4_v3"
-CONTAINER_IMAGE="nvidia/cuda:12.0.0-base-ubuntu22.04"
+
+# Docker/ACR Configuration
+CREATE_ACR=true
+BUILD_DOCKER_IMAGE=true
+PRELOAD_IMAGES=true
 ```
 
 #### For CPU Workloads:
@@ -83,7 +105,20 @@ RESOURCE_GROUP="my-cpu-batch-rg"
 LOCATION="eastus2"
 ENABLE_GPU=false
 CPU_VM_SIZE="Standard_D4s_v3"
-CONTAINER_IMAGE="ubuntu:22.04"
+
+# Skip Docker image building for CPU
+CREATE_ACR=false
+BUILD_DOCKER_IMAGE=false
+```
+
+#### Using Pre-built Docker Image:
+If you already have a Docker image in ACR:
+```bash
+ENABLE_GPU=true
+CREATE_ACR=false
+BUILD_DOCKER_IMAGE=false
+PRELOAD_IMAGES=true
+CONTAINER_IMAGE="myacr.azurecr.io/my-image:tag"
 ```
 
 ## Usage
@@ -127,9 +162,20 @@ If validation passes, you'll see "VALIDATION SUCCESSFUL" and can proceed with de
 - Base Ubuntu 22.04 LTS system
 
 ### On Batch Pool Nodes (via start task):
-- Moby Engine (Docker runtime)
-- Moby CLI
+- Docker (docker.io)
 - NVIDIA Container Toolkit (if GPU enabled)
+
+### In the Docker Container (optional custom image):
+If you enable `BUILD_DOCKER_IMAGE=true`, a custom Docker image will be built with:
+- Python 3.10 with pip and setuptools
+- PyTorch 2.1.2 with CUDA 12.1 support
+- Computer vision libraries: OpenCV, OpenSlide, FAISS
+- Hugging Face Transformers with pre-loaded models:
+  - facebook/dino-vits8
+  - facebook/dino-vits16
+- NVIDIA CUDA 12.1.0 with cuDNN 8
+
+See [DOCKER.md](DOCKER.md) for complete details on the Docker image.
 
 The Docker installation happens via the Batch pool start task to ensure it persists correctly across pool nodes.
 

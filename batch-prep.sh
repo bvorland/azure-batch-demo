@@ -75,9 +75,23 @@ BATCH_ACCOUNT_NAME="mybatch$RANDOM"  # Name of Azure Batch account (alphanumeric
 BATCH_POOL_ID="myBatchPool"                  # Name/ID of the Batch pool to create
 NODE_AGENT_SKU="batch.node.ubuntu 22.04"     # Node agent SKU id matching OS image
 
+# Container Registry Configuration
+CREATE_ACR=true                      # Set to true to create Azure Container Registry
+ACR_NAME="batchacr$RANDOM"          # ACR name (alphanumeric only, 5-50 chars, globally unique)
+ACR_SKU="Basic"                     # ACR SKU (Basic, Standard, Premium)
+BUILD_DOCKER_IMAGE=true             # Set to true to build and push Docker image
+DOCKER_IMAGE_NAME="batch-gpu-pytorch"  # Docker image name
+DOCKER_IMAGE_TAG="latest"           # Docker image tag
+PRELOAD_IMAGES=true                 # Set to true to preload Docker images on the VM
+
 # Container image(s) to prefetch (comma-separated if multiple). Use appropriate image for your workload.
 if [[ "$ENABLE_GPU" == "true" ]]; then
-  CONTAINER_IMAGE="nvidia/cuda:12.0.0-base-ubuntu22.04"
+  # Use custom ACR image if building, otherwise use public image
+  if [[ "$BUILD_DOCKER_IMAGE" == "true" && "$CREATE_ACR" == "true" ]]; then
+    CONTAINER_IMAGE="${ACR_NAME}.azurecr.io/${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+  else
+    CONTAINER_IMAGE="nvidia/cuda:12.0.0-base-ubuntu22.04"
+  fi
 else
   CONTAINER_IMAGE="ubuntu:22.04"
 fi
@@ -348,6 +362,129 @@ else
   echo "[INFO] Skipping NVIDIA driver installation (GPU not enabled)"
 fi
 
+# Create Azure Container Registry if enabled
+if [[ "$CREATE_ACR" == "true" ]]; then
+  echo "[INFO] Creating Azure Container Registry $ACR_NAME ..."
+  
+  # Check if ACR already exists
+  if az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
+    echo "[INFO] ACR $ACR_NAME already exists."
+  else
+    run_cmd "Create Azure Container Registry" \
+      az acr create \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$ACR_NAME" \
+        --sku "$ACR_SKU" \
+        --location "$LOCATION" \
+        --admin-enabled true \
+        --output none
+    echo "[INFO] ACR $ACR_NAME created successfully."
+  fi
+  
+  # Get ACR credentials
+  ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query "username" -o tsv)
+  ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
+  ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+  
+  echo "[INFO] ACR Login Server: $ACR_LOGIN_SERVER"
+fi
+
+# Build and push Docker image if enabled
+if [[ "$BUILD_DOCKER_IMAGE" == "true" && "$CREATE_ACR" == "true" ]]; then
+  echo "[INFO] Building and pushing Docker image to ACR..."
+  
+  # Check if Docker is available locally
+  if ! command -v docker &> /dev/null; then
+    echo "[ERROR] Docker is not installed locally. Please install Docker to build images." >&2
+    echo "[INFO] You can skip this step by setting BUILD_DOCKER_IMAGE=false" >&2
+    exit 1
+  fi
+  
+  # Check if Dockerfile exists
+  DOCKERFILE_PATH="./Dockerfile.gpu"
+  if [[ ! -f "$DOCKERFILE_PATH" ]]; then
+    echo "[ERROR] Dockerfile not found at $DOCKERFILE_PATH" >&2
+    exit 1
+  fi
+  
+  echo "[INFO] Building Docker image $DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG ..."
+  FULL_IMAGE_NAME="${ACR_LOGIN_SERVER}/${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+  
+  run_cmd "Build Docker image" \
+    docker build -f "$DOCKERFILE_PATH" -t "$FULL_IMAGE_NAME" .
+  
+  echo "[INFO] Logging in to ACR..."
+  run_cmd "Login to ACR" \
+    az acr login --name "$ACR_NAME"
+  
+  echo "[INFO] Pushing image to ACR..."
+  run_cmd "Push Docker image to ACR" \
+    docker push "$FULL_IMAGE_NAME"
+  
+  echo "[INFO] Docker image pushed successfully: $FULL_IMAGE_NAME"
+  
+  # Update CONTAINER_IMAGE variable
+  CONTAINER_IMAGE="$FULL_IMAGE_NAME"
+fi
+
+# Preload Docker images on the VM if enabled
+if [[ "$PRELOAD_IMAGES" == "true" ]]; then
+  echo "[INFO] Preloading Docker images on VM $VM_NAME ..."
+  
+  # Create script to pull and save Docker images
+  tmp_dir=$(mktemp -d)
+  cat > "$tmp_dir/preload-images.sh" <<INNERSCRIPT
+#!/bin/bash
+set -euo pipefail
+
+echo "Installing Docker..."
+apt-get update -y
+DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io
+
+echo "Starting Docker service..."
+systemctl start docker
+systemctl enable docker
+
+echo "Pulling container images..."
+INNERSCRIPT
+
+  # Add ACR login if ACR is being used
+  if [[ "$CREATE_ACR" == "true" && "$BUILD_DOCKER_IMAGE" == "true" ]]; then
+    cat >> "$tmp_dir/preload-images.sh" <<INNERSCRIPT
+echo "Logging in to ACR..."
+echo "$ACR_PASSWORD" | docker login "$ACR_LOGIN_SERVER" -u "$ACR_USERNAME" --password-stdin
+
+INNERSCRIPT
+  fi
+
+  # Add image pull commands
+  cat >> "$tmp_dir/preload-images.sh" <<INNERSCRIPT
+echo "Pulling image: $CONTAINER_IMAGE"
+docker pull "$CONTAINER_IMAGE"
+
+echo "Verifying image..."
+docker images | grep "${DOCKER_IMAGE_NAME}" || docker images | grep "ubuntu\|cuda"
+
+echo "Docker images preloaded successfully!"
+INNERSCRIPT
+
+  # Execute preload script on VM
+  run_cmd "Preload Docker images on VM" \
+    az vm run-command invoke \
+      --command-id RunShellScript \
+      --resource-group "$RESOURCE_GROUP" \
+      --name "$VM_NAME" \
+      --scripts @"$tmp_dir/preload-images.sh" \
+      --output none
+
+  # Cleanup temporary script
+  rm -rf "$tmp_dir"
+  
+  echo "[INFO] Docker images preloaded on VM"
+else
+  echo "[INFO] Skipping Docker image preloading"
+fi
+
 # NOTE: We do NOT install Docker here because it doesn't persist through generalization.
 # Docker will be installed via the Batch pool start task instead.
 echo "[INFO] Skipping Docker installation (will be installed via Batch start task)"
@@ -446,6 +583,12 @@ START_TASK_SCRIPT+="set -euo pipefail; "
 START_TASK_SCRIPT+="echo Installing Docker...; "
 START_TASK_SCRIPT+="apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io; "
 
+# Add ACR login if using custom ACR
+if [[ "$CREATE_ACR" == "true" && "$BUILD_DOCKER_IMAGE" == "true" ]]; then
+  START_TASK_SCRIPT+="echo Logging in to ACR...; "
+  START_TASK_SCRIPT+="echo \\\"$ACR_PASSWORD\\\" | docker login $ACR_LOGIN_SERVER -u $ACR_USERNAME --password-stdin; "
+fi
+
 if [[ "$ENABLE_GPU" == "true" ]]; then
   START_TASK_SCRIPT+="echo Installing NVIDIA container toolkit...; "
   START_TASK_SCRIPT+="distribution=\$(. /etc/os-release;echo \$ID\$VERSION_ID); "
@@ -459,6 +602,9 @@ if [[ "$ENABLE_GPU" == "true" ]]; then
   START_TASK_SCRIPT+="nvidia-smi; "
 fi
 
+# Verify or pull the container image
+START_TASK_SCRIPT+="echo Verifying container image...; "
+START_TASK_SCRIPT+="docker images | grep -q \\\"${DOCKER_IMAGE_NAME}\\\" || docker pull \\\"$CONTAINER_IMAGE\\\"; "
 START_TASK_SCRIPT+="docker --version; "
 START_TASK_SCRIPT+="echo Batch node ready"
 START_TASK_SCRIPT+="'"
