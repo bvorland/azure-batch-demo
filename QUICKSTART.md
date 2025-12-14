@@ -19,6 +19,48 @@ cd azure-batch-demo
 
 If validation passes, you're ready to deploy!
 
+## Deployment Approaches
+
+The script supports two workflows:
+
+### Traditional: Full Deployment (Simple but Slower)
+Create everything in one run (~25-30 minutes):
+```bash
+./batch-prep.sh
+```
+
+### Modular: Separate Image and Pool Creation (Recommended for Multiple Pools)
+**Time Savings: 47% faster when creating multiple pools**
+
+**Step 1: Create base image once** (~20-25 minutes):
+```bash
+./batch-prep.sh --image-only
+```
+
+**Step 2: Create multiple pools from same image** (~5 minutes each):
+```bash
+# Development pool
+./batch-prep.sh --batch-only --pool-id dev-pool --vm-size Standard_NC4as_T4_v3 --nodes 1
+
+# Testing pool
+./batch-prep.sh --batch-only --pool-id test-pool --vm-size Standard_NC6s_v3 --nodes 2
+
+# Production pool
+./batch-prep.sh --batch-only --pool-id prod-pool --vm-size Standard_NC12s_v3 --nodes 10
+```
+
+**Why use modular workflow?**
+- ✅ Create image once, reuse for many pools
+- ✅ Rapid pool creation (5 min vs 25 min)
+- ✅ Test different VM sizes without rebuilding image
+- ✅ Separate dev/test/prod environments efficiently
+- ✅ Save 35+ minutes when creating 3+ pools
+
+**Time Comparison:**
+- Traditional: 3 pools × 25 min = 75 minutes
+- Modular: 25 min (image) + 3 × 5 min (pools) = 40 minutes
+- **Savings: 35 minutes (47% faster)**
+
 ## Choosing Your Base OS
 
 The script supports both Ubuntu and AlmaLinux. Choose based on your needs:
@@ -85,18 +127,29 @@ chmod +x batch-prep.sh
 # Run pre-validation first
 ./batch-prep.sh --validate
 
-# If validation passes, run full deployment
+# Option A: Full deployment (traditional)
 ./batch-prep.sh
+
+# Option B: Modular workflow (recommended for multiple pools)
+# Create image only
+./batch-prep.sh --image-only
+
+# Then create pool(s) when ready
+./batch-prep.sh --batch-only --pool-id my-pool --nodes 2
 ```
 
-**What happens:**
+**What happens (full deployment):**
 1. ✓ Creates resource group
 2. ✓ Creates Azure Container Registry
 3. ✓ Builds Docker image with PyTorch, models (15-30 min)
 4. ✓ Pushes image to ACR
 5. ✓ Creates VM with GPU drivers
-6. ✓ Optionally preloads Docker image
+6. ✓ Preloads Docker image on VM
 7. ✓ Creates Batch account and pool
+
+**Metadata Files:**
+- `image_metadata.json` - Created by --image-only, used by --batch-only
+- `batch_metadata.json` - Created by --batch-only with pool details
 
 ### 4. Verify GPU Pool
 
@@ -128,8 +181,38 @@ RESOURCE_GROUP="my-cpu-batch"
 ### 2. Run Script
 
 ```bash
+# Full deployment
 ./batch-prep.sh
+
+# Or modular (if creating multiple CPU pools)
+./batch-prep.sh --image-only
+./batch-prep.sh --batch-only --pool-id cpu-pool-1 --nodes 4
 ```
+
+## Using Your Own Docker Image
+
+If you already have a Docker image, you can use it instead of building one:
+
+```bash
+# Edit batch-prep.sh
+CREATE_ACR=false
+BUILD_DOCKER_IMAGE=false
+PRELOAD_IMAGES=true
+CONTAINER_IMAGE="myacr.azurecr.io/myapp:v1.0"
+
+# Create image with preloaded Docker image
+./batch-prep.sh --image-only
+
+# Create pool
+./batch-prep.sh --batch-only --pool-id my-pool
+```
+
+**Supported registries:**
+- Azure Container Registry (ACR)
+- Docker Hub (public or private)
+- Any private registry (may require auth configuration)
+
+See README.md "Using Your Own Docker Image" section for more details.
 
 ## Common Commands
 
@@ -248,13 +331,25 @@ az batch node file download --pool-id myBatchPool --node-id $NODE_ID \
 
 ## Time Estimates
 
+### Full Deployment
 - VM creation: 3-5 minutes
 - GPU driver installation: 5-10 minutes
+- Docker image build (if enabled): 15-30 minutes
 - Image creation: 10-15 minutes
 - Batch pool creation: 1-2 minutes
 - Node startup (with start task): 5-10 minutes
 
 **Total time**: 25-45 minutes for complete setup
+
+### Modular Workflow
+- **Image creation** (--image-only): 20-25 minutes (one time)
+- **Pool creation** (--batch-only): 5-10 minutes (per pool)
+
+**Multiple pools example:**
+- 1st pool (full): 25 min
+- 2nd pool (batch-only): 5 min
+- 3rd pool (batch-only): 5 min
+- **Total: 35 min** (vs 75 min traditional)
 
 ## Cost Estimates (per hour)
 
