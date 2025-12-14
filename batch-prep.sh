@@ -22,6 +22,7 @@ OVERRIDE_NODE_COUNT="1"
 OVERRIDE_IMAGE_ID=""
 OVERRIDE_GPU=""
 OVERRIDE_OS=""
+CREATE_VERIFY_JOB=false
 
 # ---------------------------
 # PARSE COMMAND LINE ARGUMENTS
@@ -41,6 +42,7 @@ parse_arguments() {
       --gpu) OVERRIDE_GPU="true"; shift ;;
       --cpu) OVERRIDE_GPU="false"; shift ;;
       --os) OVERRIDE_OS="$2"; shift 2 ;;
+      --verify) CREATE_VERIFY_JOB=true; shift ;;
       --help|-h) show_help; exit 0 ;;
       *) echo "[ERROR] Unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -68,6 +70,7 @@ OPTIONS:
   --gpu               Enable GPU support
   --cpu               Enable CPU-only mode
   --os <ubuntu|almalinux>  Select base OS
+  --verify            Create verification job after pool creation
   --dry-run           Show what would be done without executing
   --help, -h          Show this help message
 
@@ -80,8 +83,11 @@ EXAMPLES:
   ./batch-prep.sh --batch-only --pool-id test-pool --vm-size Standard_NC6 --nodes 2
   ./batch-prep.sh --batch-only --pool-id prod-pool --vm-size Standard_NC12 --nodes 10
 
-  # Full deployment (backward compatible)
-  ./batch-prep.sh --gpu --os ubuntu
+  # Full deployment with verification (backward compatible)
+  ./batch-prep.sh --gpu --os ubuntu --verify
+
+  # Create pool and verify preloaded Docker image
+  ./batch-prep.sh --batch-only --pool-id my-pool --verify
 
   # Validation only
   ./batch-prep.sh --validate
@@ -150,6 +156,7 @@ BUILD_DOCKER_IMAGE=false
 DOCKER_IMAGE_NAME="batch-gpu-pytorch"
 DOCKER_IMAGE_TAG="latest"
 PRELOAD_IMAGES=false
+CONTAINER_IMAGE=""  # Set this to use your own Docker image (e.g., "myacr.azurecr.io/myapp:v1.0")
 
 # Metadata file paths
 IMAGE_METADATA_FILE="image_metadata.json"
@@ -180,15 +187,17 @@ configure_os_settings() {
     exit 1
   fi
   
-  # Container image selection
-  if [[ "$ENABLE_GPU" == "true" ]]; then
-    if [[ "$BUILD_DOCKER_IMAGE" == "true" && "$CREATE_ACR" == "true" ]]; then
-      CONTAINER_IMAGE="${ACR_NAME}.azurecr.io/${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+  # Container image selection (only set if not already defined by user)
+  if [[ -z "$CONTAINER_IMAGE" ]]; then
+    if [[ "$ENABLE_GPU" == "true" ]]; then
+      if [[ "$BUILD_DOCKER_IMAGE" == "true" && "$CREATE_ACR" == "true" ]]; then
+        CONTAINER_IMAGE="${ACR_NAME}.azurecr.io/${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+      else
+        CONTAINER_IMAGE="nvidia/cuda:12.0.0-base-ubuntu22.04"
+      fi
     else
-      CONTAINER_IMAGE="nvidia/cuda:12.0.0-base-ubuntu22.04"
+      CONTAINER_IMAGE="ubuntu:22.04"
     fi
-  else
-    CONTAINER_IMAGE="ubuntu:22.04"
   fi
 }
 
@@ -467,19 +476,48 @@ setup_container_registry() {
 
 # Preload Docker images on VM
 preload_docker_images() {
-  if [[ "$PRELOAD_IMAGES" != "true" || "$CREATE_ACR" != "true" || "$BUILD_DOCKER_IMAGE" != "true" ]]; then
+  if [[ "$PRELOAD_IMAGES" != "true" ]]; then
+    return
+  fi
+
+  if [[ -z "$CONTAINER_IMAGE" ]]; then
+    echo "[WARNING] PRELOAD_IMAGES=true but CONTAINER_IMAGE is not set. Skipping preload."
     return
   fi
 
   echo ""
-  echo "[INFO] Preloading Docker image on VM..."
+  echo "[INFO] Preloading Docker image on VM: $CONTAINER_IMAGE"
 
-  # Get ACR credentials
-  ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query "username" -o tsv)
-  ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
-
-  # Login to ACR and pull image
-  PRELOAD_SCRIPT="sudo docker login ${ACR_NAME}.azurecr.io -u ${ACR_USERNAME} -p ${ACR_PASSWORD} && sudo docker pull ${CONTAINER_IMAGE}"
+  # Determine if we need authentication based on image source
+  if [[ "$CONTAINER_IMAGE" == *".azurecr.io/"* ]]; then
+    # ACR image - need authentication
+    if [[ "$CREATE_ACR" == "true" ]]; then
+      # Use the ACR we created
+      ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query "username" -o tsv)
+      ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
+      ACR_REGISTRY="${ACR_NAME}.azurecr.io"
+    else
+      # Extract ACR name from CONTAINER_IMAGE (format: myacr.azurecr.io/image:tag)
+      ACR_REGISTRY=$(echo "$CONTAINER_IMAGE" | cut -d'/' -f1)
+      ACR_NAME=$(echo "$ACR_REGISTRY" | cut -d'.' -f1)
+      
+      # Try to get credentials for existing ACR
+      if ! ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query "username" -o tsv 2>/dev/null); then
+        echo "[ERROR] Cannot get credentials for ACR: $ACR_NAME"
+        echo "[ERROR] Either enable CREATE_ACR=true or ensure the ACR exists and you have access"
+        exit 1
+      fi
+      ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
+    fi
+    
+    # Login to ACR and pull image
+    PRELOAD_SCRIPT="sudo docker login ${ACR_REGISTRY} -u ${ACR_USERNAME} -p ${ACR_PASSWORD} && sudo docker pull ${CONTAINER_IMAGE}"
+    
+  else
+    # Public image (Docker Hub, etc.) - no authentication needed
+    echo "[INFO] Using public image (no authentication required)"
+    PRELOAD_SCRIPT="sudo docker pull ${CONTAINER_IMAGE}"
+  fi
 
   run_cmd "Preload Docker image" \
     az vm run-command invoke \
@@ -820,6 +858,156 @@ EOF
   echo "[INFO] VM Size: $VM_SIZE"
   echo "[INFO] Node Count: $OVERRIDE_NODE_COUNT"
   echo "[INFO] Metadata: $BATCH_METADATA_FILE"
+  echo ""
+  
+  # Create verification job if requested
+  create_verification_job
+}
+
+# Create verification job to test pool
+create_verification_job() {
+  if [[ "$CREATE_VERIFY_JOB" != "true" ]]; then
+    return
+  fi
+
+  echo ""
+  echo "=========================================="
+  echo "CREATING VERIFICATION JOB"
+  echo "=========================================="
+  
+  local JOB_ID="verify-pool-${BATCH_POOL_ID}-$(date +%Y%m%d-%H%M%S)"
+  local TASK_ID="verify-task-1"
+  
+  echo "[INFO] Job ID: $JOB_ID"
+  echo "[INFO] Creating job on pool: $BATCH_POOL_ID"
+  
+  # Create job
+  run_cmd "Create verification job" \
+    az batch job create \
+      --id "$JOB_ID" \
+      --pool-id "$BATCH_POOL_ID" \
+      --account-name "$BATCH_ACCOUNT_NAME"
+  
+  echo "[SUCCESS] Job created"
+  
+  # Determine verification command based on configuration
+  local VERIFY_CMD=""
+  
+  if [[ "$PRELOAD_IMAGES" == "true" && -n "$CONTAINER_IMAGE" ]]; then
+    # Verify Docker image is preloaded
+    echo "[INFO] Testing preloaded Docker image: $CONTAINER_IMAGE"
+    VERIFY_CMD="/bin/bash -c 'echo \"=== System Info ===\"; uname -a; echo \"\"; echo \"=== Docker Info ===\"; docker --version; echo \"\"; echo \"=== Docker Images ===\"; docker images; echo \"\"; echo \"=== Testing Docker Image ===\"; docker inspect $CONTAINER_IMAGE && echo \"✓ Image preloaded successfully\" || echo \"✗ Image not found\""
+    
+    if [[ "$ENABLE_GPU" == "true" ]]; then
+      VERIFY_CMD="$VERIFY_CMD; echo \"\"; echo \"=== GPU Info ===\"; nvidia-smi || echo \"No GPU detected\""
+    fi
+    
+    VERIFY_CMD="$VERIFY_CMD; echo \"\"; echo \"=== Testing Docker Run ===\"; docker run --rm $CONTAINER_IMAGE echo \"✓ Docker container executed successfully\"'"
+  elif [[ "$ENABLE_GPU" == "true" ]]; then
+    # GPU verification
+    echo "[INFO] Testing GPU availability"
+    VERIFY_CMD="/bin/bash -c 'echo \"=== System Info ===\"; uname -a; echo \"\"; echo \"=== GPU Info ===\"; nvidia-smi; echo \"\"; echo \"=== Docker Info ===\"; docker --version'"
+  else
+    # Basic system verification
+    echo "[INFO] Testing basic system configuration"
+    VERIFY_CMD="/bin/bash -c 'echo \"=== System Info ===\"; uname -a; echo \"\"; echo \"=== Docker Info ===\"; docker --version; echo \"\"; echo \"=== CPU Info ===\"; lscpu | grep -E \"Model name|CPU\(s\)|Thread\"'"
+  fi
+  
+  # Create task
+  echo "[INFO] Creating verification task..."
+  run_cmd "Create verification task" \
+    az batch task create \
+      --job-id "$JOB_ID" \
+      --task-id "$TASK_ID" \
+      --command-line "$VERIFY_CMD" \
+      --account-name "$BATCH_ACCOUNT_NAME"
+  
+  echo "[SUCCESS] Verification task created"
+  echo ""
+  echo "[INFO] Monitoring task execution (timeout: 5 minutes)..."
+  
+  # Monitor task completion
+  local TIMEOUT=300
+  local ELAPSED=0
+  local INTERVAL=10
+  local TASK_STATE=""
+  
+  while [[ $ELAPSED -lt $TIMEOUT ]]; do
+    TASK_STATE=$(az batch task show \
+      --job-id "$JOB_ID" \
+      --task-id "$TASK_ID" \
+      --account-name "$BATCH_ACCOUNT_NAME" \
+      --query "state" -o tsv 2>/dev/null || echo "unknown")
+    
+    echo "[INFO] Task state: $TASK_STATE (${ELAPSED}s elapsed)"
+    
+    if [[ "$TASK_STATE" == "completed" ]]; then
+      break
+    fi
+    
+    sleep $INTERVAL
+    ELAPSED=$((ELAPSED + INTERVAL))
+  done
+  
+  echo ""
+  
+  if [[ "$TASK_STATE" == "completed" ]]; then
+    echo "[SUCCESS] Task completed!"
+    echo ""
+    echo "=========================================="
+    echo "VERIFICATION TASK OUTPUT"
+    echo "=========================================="
+    
+    # Get task output
+    az batch task file download \
+      --job-id "$JOB_ID" \
+      --task-id "$TASK_ID" \
+      --file-path "stdout.txt" \
+      --destination /dev/stdout \
+      --account-name "$BATCH_ACCOUNT_NAME" 2>/dev/null || echo "[WARNING] Could not retrieve stdout"
+    
+    echo ""
+    echo "=========================================="
+    echo "VERIFICATION TASK ERRORS (if any)"
+    echo "=========================================="
+    
+    az batch task file download \
+      --job-id "$JOB_ID" \
+      --task-id "$TASK_ID" \
+      --file-path "stderr.txt" \
+      --destination /dev/stdout \
+      --account-name "$BATCH_ACCOUNT_NAME" 2>/dev/null || echo "[INFO] No errors"
+    
+    echo ""
+    
+    # Get execution info
+    local EXIT_CODE=$(az batch task show \
+      --job-id "$JOB_ID" \
+      --task-id "$TASK_ID" \
+      --account-name "$BATCH_ACCOUNT_NAME" \
+      --query "executionInfo.exitCode" -o tsv 2>/dev/null || echo "unknown")
+    
+    if [[ "$EXIT_CODE" == "0" ]]; then
+      echo "[SUCCESS] ✓ Verification passed (exit code: 0)"
+    else
+      echo "[WARNING] Task completed with exit code: $EXIT_CODE"
+    fi
+  else
+    echo "[WARNING] Task did not complete within timeout period"
+    echo "[INFO] Current state: $TASK_STATE"
+    echo "[INFO] You can check task status with:"
+    echo "  az batch task show --job-id $JOB_ID --task-id $TASK_ID --account-name $BATCH_ACCOUNT_NAME"
+  fi
+  
+  echo ""
+  echo "[INFO] Verification job ID: $JOB_ID"
+  echo "[INFO] Task ID: $TASK_ID"
+  echo ""
+  echo "To view full task details:"
+  echo "  az batch task show --job-id $JOB_ID --task-id $TASK_ID --account-name $BATCH_ACCOUNT_NAME"
+  echo ""
+  echo "To delete the verification job:"
+  echo "  az batch job delete --job-id $JOB_ID --account-name $BATCH_ACCOUNT_NAME --yes"
   echo ""
 }
 

@@ -160,7 +160,18 @@ If validation passes, you'll see "VALIDATION SUCCESSFUL" and can proceed with de
    ./batch-prep.sh
    ```
 
-3. Monitor progress in the console output or check the log file in `./logs/batch_prep_YYYYMMDD_HHMMSS.log`
+3. Run with verification (recommended):
+   ```bash
+   ./batch-prep.sh --verify
+   ```
+   
+   This will automatically test the pool after creation by running a verification job that checks:
+   - System configuration
+   - Docker installation
+   - GPU availability (if enabled)
+   - Preloaded Docker images (if PRELOAD_IMAGES=true)
+
+4. Monitor progress in the console output or check the log file in `./logs/batch_prep_YYYYMMDD_HHMMSS.log`
 
 ## What Gets Installed
 
@@ -517,6 +528,60 @@ CONTAINER_IMAGE="myregistry.azurecr.io/myapp:latest"
 ```
 
 Tasks will pull the image when first needed. This uses less VM image storage but increases task startup time.
+
+### Testing and Verification
+
+After creating your Batch pool, you can automatically verify its configuration using the `--verify` flag:
+
+```bash
+# Create pool and run verification
+./batch-prep.sh --verify
+```
+
+The verification job will:
+1. Create a test job on the newly created pool
+2. Submit a task that checks:
+   - System information (OS, kernel version)
+   - Docker installation and version
+   - GPU availability (if `ENABLE_GPU=true`)
+   - Preloaded Docker images (if `PRELOAD_IMAGES=true`)
+   - Docker container execution
+3. Display the task output and exit code
+4. Provide commands to view full task details
+
+**Example verification output for a GPU pool with preloaded images:**
+```
+=== System Info ===
+Linux batch-node 5.15.0-1052-azure #60-Ubuntu SMP x86_64 GNU/Linux
+
+=== Docker Info ===
+Docker version 24.0.7, build afdd53b
+
+=== Docker Images ===
+REPOSITORY                              TAG       IMAGE ID       SIZE
+myacr.azurecr.io/batch-gpu-pytorch     latest    abc123def456   5.2GB
+
+=== GPU Info ===
+Tesla T4, Driver Version: 525.125.06, CUDA Version: 12.0
+
+✓ Image preloaded successfully
+✓ Docker container executed successfully
+```
+
+**Manual verification:**
+You can also manually check your pool without the `--verify` flag:
+
+```bash
+# Create a test job
+az batch job create --id test-job --pool-id myBatchPool --account-name mybatchaccount
+
+# Create a test task
+az batch task create \
+  --job-id test-job \
+  --task-id test-1 \
+  --command-line "/bin/bash -c 'nvidia-smi; docker images'" \
+  --account-name mybatchaccount
+```
 
 ### Reusing Existing Images
 
