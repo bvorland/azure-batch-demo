@@ -1,0 +1,22 @@
+{
+  "id": "testPool",
+  "vmSize": "Standard_D2s_v3",
+  "virtualMachineConfiguration": {
+    "imageReference": {
+      "virtualMachineImageId": "/subscriptions/test-sub/resourceGroups/test-rg/providers/Microsoft.Compute/galleries/testGallery/images/testImage/versions/1.0.0"
+    },
+    "nodeAgentSKUId": "batch.node.ubuntu 22.04"
+  },
+  "targetDedicatedNodes": 1,
+  "startTask": {
+    "commandLine": "/bin/bash -c \"echo test\"",
+    "waitForSuccess": true,
+    "userIdentity": {
+      "autoUser": {
+        "scope": "pool",
+        "elevationLevel": "admin"
+      }
+    },
+    "maxTaskRetryCount": 0
+  }
+}

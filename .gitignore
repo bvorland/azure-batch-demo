@@ -6,6 +6,7 @@ logs/
 tmp/
 temp/
 *.tmp
+pool_config_*.json
 
 # SSH keys
 *.pem

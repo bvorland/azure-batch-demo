@@ -70,7 +70,7 @@ else
   exit 1
 fi
 
-RESOURCE_GROUP="batch-e2e-gpu-test"      # Azure Resource Group name
+RESOURCE_GROUP="batch-e2e-test-simple"   # Azure Resource Group name
 LOCATION="swedencentral"                # Azure region (e.g., eastus2, westeurope, southcentralus)
 
 # GPU Configuration
@@ -102,13 +102,13 @@ BATCH_POOL_ID="myBatchPool"              # Name/ID of the Batch pool to create
 NODE_AGENT_SKU="${NODE_AGENT_SKU}"       # Node agent SKU (auto-set based on BASE_OS)
 
 # Container Registry Configuration
-CREATE_ACR=true                      # Set to true to create Azure Container Registry
+CREATE_ACR=false                     # Set to false - skip ACR for quick test
 ACR_NAME="batchacr$RANDOM"          # ACR name (alphanumeric only, 5-50 chars, globally unique)
 ACR_SKU="Basic"                     # ACR SKU (Basic, Standard, Premium)
-BUILD_DOCKER_IMAGE=true             # Set to true to build and push Docker image
+BUILD_DOCKER_IMAGE=false            # Set to false - skip Docker build for quick test
 DOCKER_IMAGE_NAME="batch-gpu-pytorch"  # Docker image name
 DOCKER_IMAGE_TAG="latest"           # Docker image tag
-PRELOAD_IMAGES=true                 # Set to true to preload Docker images on the VM
+PRELOAD_IMAGES=false                # Set to false - skip image preload for quick test
 
 # Container image(s) to prefetch (comma-separated if multiple). Use appropriate image for your workload.
 if [[ "$ENABLE_GPU" == "true" ]]; then
@@ -641,8 +641,10 @@ START_TASK_SCRIPT+="'"
 
 echo "[INFO] Creating Batch pool $BATCH_POOL_ID with VM size $VM_SIZE ..."
 
-# Create a JSON configuration for the pool
-POOL_JSON=$(mktemp)
+# Create a JSON configuration for the pool in the current directory
+# This avoids WSL /tmp path translation issues
+POOL_JSON="./pool_config_${BATCH_POOL_ID}.json"
+
 cat > "$POOL_JSON" <<EOF
 {
   "id": "$BATCH_POOL_ID",
@@ -667,6 +669,18 @@ cat > "$POOL_JSON" <<EOF
   }
 }
 EOF
+
+# Verify the JSON file was created and is valid
+if [[ ! -f "$POOL_JSON" ]]; then
+  echo "[ERROR] Failed to create pool configuration file: $POOL_JSON" >&2
+  exit 1
+fi
+
+echo "[INFO] Pool configuration file created: $POOL_JSON"
+echo "[INFO] Validating JSON syntax..."
+if ! python3 -m json.tool "$POOL_JSON" > /dev/null 2>&1; then
+  echo "[WARN] JSON validation failed, but continuing anyway..."
+fi
 
 # Create the pool using the JSON configuration
 run_cmd "Create Batch pool" \
