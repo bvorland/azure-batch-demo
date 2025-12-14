@@ -67,13 +67,13 @@ Edit the configuration section at the top of the script to customize your deploy
 
 ### Container Registry & Docker Configuration
 
-- **CREATE_ACR**: Set to `true` to create Azure Container Registry (default: `true`)
+- **CREATE_ACR**: Set to `true` to create Azure Container Registry (default: `false`)
 - **ACR_NAME**: ACR name (alphanumeric only, globally unique, random suffix added)
 - **ACR_SKU**: ACR tier - Basic, Standard, or Premium (default: `Basic`)
-- **BUILD_DOCKER_IMAGE**: Set to `true` to build custom Docker image (default: `true`)
+- **BUILD_DOCKER_IMAGE**: Set to `true` to build custom Docker image (default: `false`)
 - **DOCKER_IMAGE_NAME**: Name for the Docker image (default: `batch-gpu-pytorch`)
 - **DOCKER_IMAGE_TAG**: Docker image tag (default: `latest`)
-- **PRELOAD_IMAGES**: Set to `true` to preload Docker images on VM (default: `true`)
+- **PRELOAD_IMAGES**: Set to `true` to preload Docker images on VM (default: `false`)
 
 When `BUILD_DOCKER_IMAGE=true`, the script will:
 1. Create an Azure Container Registry (if `CREATE_ACR=true`)
