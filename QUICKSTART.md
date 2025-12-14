@@ -31,7 +31,7 @@ az vm list-usage --location eastus2 --query "[?contains(name.value, 'NCASv3_T4')
 az vm list-usage --location eastus2 --query "[?contains(name.value, 'NCSv3')]" -o table
 ```
 
-### 2. Configure Script for GPU
+### 2. Configure Script for GPU with Custom Docker Image
 
 Edit `batch-prep.sh`:
 ```bash
@@ -39,14 +39,35 @@ ENABLE_GPU=true
 GPU_VM_SIZE="Standard_NC4as_T4_v3"
 LOCATION="eastus2"
 RESOURCE_GROUP="my-gpu-batch"
+
+# Docker/ACR Configuration
+CREATE_ACR=true
+BUILD_DOCKER_IMAGE=true
+PRELOAD_IMAGES=true
 ```
+
+**Note**: Building the Docker image requires Docker installed locally. If you don't have Docker, set `BUILD_DOCKER_IMAGE=false` and use a public image.
 
 ### 3. Run Script
 
 ```bash
 chmod +x batch-prep.sh
+
+# Run pre-validation first
+./batch-prep.sh --validate
+
+# If validation passes, run full deployment
 ./batch-prep.sh
 ```
+
+**What happens:**
+1. ✓ Creates resource group
+2. ✓ Creates Azure Container Registry
+3. ✓ Builds Docker image with PyTorch, models (15-30 min)
+4. ✓ Pushes image to ACR
+5. ✓ Creates VM with GPU drivers
+6. ✓ Optionally preloads Docker image
+7. ✓ Creates Batch account and pool
 
 ### 4. Verify GPU Pool
 
