@@ -1,0 +1,112 @@
+# Build arguments
+ARG CUDA_VERSION=12.1.0
+ARG CUDNN_VERSION=8
+ARG ALMA_VERSION=8
+
+# Use NVIDIA CUDA base image for AlmaLinux
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn${CUDNN_VERSION}-runtime-rockylinux${ALMA_VERSION}
+
+# Metadata
+LABEL maintainer="Azure Batch Demo"
+LABEL description="GPU-enabled AlmaLinux container with PyTorch, FAISS, OpenSlide, and pre-loaded Hugging Face models"
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    TORCH_CUDA_ARCH_LIST="7.0 7.5 8.0 8.6 8.9 9.0+PTX" \
+    HF_HOME=/app/models \
+    TRANSFORMERS_CACHE=/app/models \
+    PATH="/home/appuser/.local/bin:${PATH}"
+
+# Install EPEL repository and system dependencies
+RUN dnf install -y epel-release && \
+    dnf install -y \
+    python3.11 \
+    python3.11-pip \
+    python3.11-devel \
+    git \
+    wget \
+    curl \
+    mesa-libGL \
+    glib2 \
+    libSM \
+    libXext \
+    libXrender \
+    gcc \
+    gcc-c++ \
+    make \
+    && dnf clean all
+
+# Create symbolic link for python
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python
+
+# Upgrade pip and install core packages
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install PyTorch with CUDA support (CUDA 12.1)
+RUN pip3 install --no-cache-dir \
+    torch==2.1.2 \
+    torchvision==0.16.2 \
+    torchaudio==2.1.2 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# Install scientific computing and ML libraries
+RUN pip3 install --no-cache-dir \
+    faiss-cpu==1.7.4 \
+    opencv-python==4.9.0.80 \
+    transformers==4.36.2 \
+    accelerate==0.25.0 \
+    timm==0.9.12 \
+    pillow==10.1.0 \
+    numpy==1.26.3 \
+    scipy==1.11.4 \
+    huggingface-hub==0.20.2
+
+# Note: OpenSlide is not easily available on AlmaLinux via pip
+# For production use, consider building from source or using Ubuntu base
+# RUN pip3 install --no-cache-dir openslide-python==1.3.1
+
+# Create application and model directories
+RUN mkdir -p /app/models /app/data /app/output
+
+# Pre-download Hugging Face models to reduce startup time
+RUN python3 << 'EOF'
+from transformers import AutoModel, AutoImageProcessor
+import torch
+
+print("Downloading facebook/dino-vits8...")
+model_s8 = AutoModel.from_pretrained('facebook/dino-vits8')
+processor_s8 = AutoImageProcessor.from_pretrained('facebook/dino-vits8')
+print("✓ facebook/dino-vits8 downloaded")
+
+print("Downloading facebook/dino-vits16...")
+model_s16 = AutoModel.from_pretrained('facebook/dino-vits16')
+processor_s16 = AutoImageProcessor.from_pretrained('facebook/dino-vits16')
+print("✓ facebook/dino-vits16 downloaded")
+
+print("Models cached successfully!")
+EOF
+
+# Create a non-root user for security
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Set working directory
+WORKDIR /app
+
+# Verify installations
+RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA Available: {torch.cuda.is_available()}')" && \
+    python3 -c "import cv2; print(f'OpenCV: {cv2.__version__}')" && \
+    python3 -c "import faiss; print(f'FAISS: {faiss.__version__}')" && \
+    python3 -c "from transformers import AutoModel; print('Transformers: OK')" && \
+    echo "All dependencies verified successfully!"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python3 -c "import torch; exit(0 if torch.cuda.is_available() else 1)"
+
+# Default command - interactive shell
+CMD ["/bin/bash"]

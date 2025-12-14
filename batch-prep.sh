@@ -44,11 +44,37 @@ fi
 # CONFIGURATION SECTION
 # Modify these values as needed
 # ---------------------------
-RESOURCE_GROUP="batch-demo-test"         # Azure Resource Group name
+# Base OS Configuration
+BASE_OS="ubuntu"                           # Base OS: "ubuntu" or "almalinux"
+OS_VERSION="22.04"                         # Ubuntu: 22.04, 20.04 | AlmaLinux: 8, 9
+
+# Auto-configure based on BASE_OS selection
+if [[ "$BASE_OS" == "ubuntu" ]]; then
+  VM_IMAGE_URN="Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest"
+  NODE_AGENT_SKU="batch.node.ubuntu 22.04"
+  IMAGE_SKU="Ubuntu2204"
+  DOCKERFILE="Dockerfile.gpu.ubuntu"
+elif [[ "$BASE_OS" == "almalinux" ]]; then
+  if [[ "$OS_VERSION" == "9" ]]; then
+    VM_IMAGE_URN="almalinux:almalinux-x86_64:9-gen2:latest"
+    NODE_AGENT_SKU="batch.node.el 9"
+    IMAGE_SKU="AlmaLinux9"
+  else
+    VM_IMAGE_URN="almalinux:almalinux-x86_64:8-gen2:latest"
+    NODE_AGENT_SKU="batch.node.el 8"
+    IMAGE_SKU="AlmaLinux8"
+  fi
+  DOCKERFILE="Dockerfile.gpu.almalinux"
+else
+  echo "[ERROR] Invalid BASE_OS: $BASE_OS. Must be 'ubuntu' or 'almalinux'" >&2
+  exit 1
+fi
+
+RESOURCE_GROUP="batch-e2e-gpu-test"      # Azure Resource Group name
 LOCATION="swedencentral"                # Azure region (e.g., eastus2, westeurope, southcentralus)
 
 # GPU Configuration
-ENABLE_GPU=false                         # Set to true for GPU workloads, false for CPU-only
+ENABLE_GPU=false                         # Set to false for CPU test (no GPU quota)
 GPU_VM_SIZE="Standard_NC4as_T4_v3"       # GPU VM size (NC4as_T4_v3, NC6s_v3, NC8as_T4_v3, etc.)
 CPU_VM_SIZE="Standard_D2s_v3"            # CPU VM size for non-GPU workloads (using smaller size for test)
 
@@ -68,12 +94,12 @@ IMAGE_DEFINITION_NAME="batchCustomImage" # Name of the image definition
 IMAGE_VERSION="1.0.0"                    # Version of the image
 IMAGE_PUBLISHER="MyCompany"              # Publisher name for the image
 IMAGE_OFFER="BatchImages"                # Offer name for the image
-IMAGE_SKU="Ubuntu2204"                   # SKU name for the image
+IMAGE_SKU="${IMAGE_SKU}"                 # SKU name (auto-set based on BASE_OS)
 
 # Batch Configuration
-BATCH_ACCOUNT_NAME="mybatch$RANDOM"  # Name of Azure Batch account (alphanumeric only, 3-24 chars)
-BATCH_POOL_ID="myBatchPool"                  # Name/ID of the Batch pool to create
-NODE_AGENT_SKU="batch.node.ubuntu 22.04"     # Node agent SKU id matching OS image
+BATCH_ACCOUNT_NAME="mybatch$RANDOM"      # Name of Azure Batch account (alphanumeric only, 3-24 chars)
+BATCH_POOL_ID="myBatchPool"              # Name/ID of the Batch pool to create
+NODE_AGENT_SKU="${NODE_AGENT_SKU}"       # Node agent SKU (auto-set based on BASE_OS)
 
 # Container Registry Configuration
 CREATE_ACR=true                      # Set to true to create Azure Container Registry
@@ -96,8 +122,10 @@ else
   CONTAINER_IMAGE="ubuntu:22.04"
 fi
 
-# Base OS image URN: Ubuntu 22.04 LTS. Standard images are Gen1 by default.
-VM_IMAGE_URN="Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest"
+echo "[INFO] Base OS: $BASE_OS $OS_VERSION"
+echo "[INFO] VM Image URN: $VM_IMAGE_URN"
+echo "[INFO] Node Agent SKU: $NODE_AGENT_SKU"
+echo "[INFO] Dockerfile: $DOCKERFILE"
 HYPERV_GENERATION="V1"                   # V1 or V2 - must match the VM image
 
 # Create logs directory & file
@@ -401,9 +429,11 @@ if [[ "$BUILD_DOCKER_IMAGE" == "true" && "$CREATE_ACR" == "true" ]]; then
   fi
   
   # Check if Dockerfile exists
-  DOCKERFILE_PATH="./Dockerfile.gpu"
+  DOCKERFILE_PATH="./$DOCKERFILE"
   if [[ ! -f "$DOCKERFILE_PATH" ]]; then
     echo "[ERROR] Dockerfile not found at $DOCKERFILE_PATH" >&2
+    echo "[INFO] Available Dockerfiles for $BASE_OS:" >&2
+    ls -1 Dockerfile.gpu.* 2>/dev/null >&2 || echo "  No Dockerfiles found" >&2
     exit 1
   fi
   

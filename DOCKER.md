@@ -2,6 +2,8 @@
 
 This directory contains Docker configurations for building GPU-enabled containers with PyTorch, computer vision libraries, and pre-loaded AI models for Azure Batch.
 
+**Multi-OS Support**: Ubuntu and AlmaLinux base images available.
+
 ## Image Contents
 
 ### Base Image
@@ -37,9 +39,27 @@ Models are stored in `/app/models` directory.
 
 ## Files
 
-- **Dockerfile**: Basic GPU image (simpler, faster build)
-- **Dockerfile.gpu**: Production GPU image (comprehensive, with pre-loaded models)
+- **Dockerfile**: Basic GPU image (legacy, simpler version)
+- **Dockerfile.gpu**: Legacy single-OS version
+- **Dockerfile.gpu.ubuntu**: Production Ubuntu image with pre-loaded models
+- **Dockerfile.gpu.almalinux**: Production AlmaLinux image with pre-loaded models
 - **build-and-push-docker.sh**: Helper script to build and push to ACR
+
+## OS-Specific Considerations
+
+### Ubuntu 22.04
+- **Python**: 3.10
+- **Package Manager**: apt-get
+- **Docker**: docker.io
+- **OpenSlide**: ✓ Available via apt
+- **Best for**: Maximum compatibility, easier dependency installation
+
+### AlmaLinux 8/9
+- **Python**: 3.11
+- **Package Manager**: dnf
+- **Docker**: docker-ce
+- **OpenSlide**: ✗ Not easily available (must build from source)
+- **Best for**: Enterprise environments, RHEL compatibility
 
 ## Building Locally
 

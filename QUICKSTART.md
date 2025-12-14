@@ -19,9 +19,38 @@ cd azure-batch-demo
 
 If validation passes, you're ready to deploy!
 
+## Choosing Your Base OS
+
+The script supports both Ubuntu and AlmaLinux. Choose based on your needs:
+
+**Ubuntu 22.04** (Default):
+- Best for: Maximum compatibility, easiest setup
+- Includes: All libraries including OpenSlide
+- Best for: New users, development, ML workloads
+
+**AlmaLinux 8/9**:
+- Best for: Enterprise environments, RHEL compatibility
+- Note: OpenSlide not included (must build from source)
+- Best for: Production, compliance requirements
+
+See [MULTI-OS-GUIDE.md](MULTI-OS-GUIDE.md) for detailed comparison.
+
 ## GPU Workload Setup
 
-### 1. Check GPU Quota
+### 1. Choose Your OS
+
+Edit `batch-prep.sh`:
+```bash
+# For Ubuntu (recommended)
+BASE_OS="ubuntu"
+OS_VERSION="22.04"
+
+# OR for AlmaLinux
+BASE_OS="almalinux"
+OS_VERSION="8"
+```
+
+### 2. Check GPU Quota
 
 ```bash
 # Check quota for T4 GPUs (NCASv3_T4 family)
@@ -31,7 +60,7 @@ az vm list-usage --location eastus2 --query "[?contains(name.value, 'NCASv3_T4')
 az vm list-usage --location eastus2 --query "[?contains(name.value, 'NCSv3')]" -o table
 ```
 
-### 2. Configure Script for GPU with Custom Docker Image
+### 3. Configure Script for GPU with Custom Docker Image
 
 Edit `batch-prep.sh`:
 ```bash

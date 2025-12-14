@@ -77,19 +77,63 @@ Edit the configuration section at the top of the script to customize your deploy
 
 When `BUILD_DOCKER_IMAGE=true`, the script will:
 1. Create an Azure Container Registry (if `CREATE_ACR=true`)
-2. Build a GPU-enabled Docker image with PyTorch, OpenCV, OpenSlide, FAISS, and pre-loaded Hugging Face models
-3. Push the image to your ACR
-4. Optionally preload the image on the VM before generalization
-5. Configure the Batch pool to use this image
+2. Select appropriate Dockerfile based on BASE_OS (Dockerfile.gpu.ubuntu or Dockerfile.gpu.almalinux)
+3. Build a GPU-enabled Docker image with PyTorch, OpenCV, FAISS, and pre-loaded Hugging Face models
+4. Push the image to your ACR
+5. Optionally preload the image on the VM before generalization
+6. Configure the Batch pool to use this image
 
 See [DOCKER.md](DOCKER.md) for details on the Docker image contents.
 
 ### Example Configuration
 
-#### For GPU Workloads:
+#### Ubuntu 22.04 with GPU:
 ```bash
-RESOURCE_GROUP="my-gpu-batch-rg"
+BASE_OS="ubuntu"
+OS_VERSION="22.04"
+ENABLE_GPU=true
+GPU_VM_SIZE="Standard_NC4as_T4_v3"
 LOCATION="eastus2"
+
+# Docker/ACR Configuration
+CREATE_ACR=true
+BUILD_DOCKER_IMAGE=true
+PRELOAD_IMAGES=true
+```
+
+#### AlmaLinux 8 with GPU:
+```bash
+BASE_OS="almalinux"
+OS_VERSION="8"
+ENABLE_GPU=true
+GPU_VM_SIZE="Standard_NC4as_T4_v3"
+LOCATION="eastus2"
+
+# Docker/ACR Configuration
+CREATE_ACR=true
+BUILD_DOCKER_IMAGE=true
+PRELOAD_IMAGES=true
+```
+
+#### Ubuntu 22.04 CPU Only:
+```bash
+BASE_OS="ubuntu"
+OS_VERSION="22.04"
+ENABLE_GPU=false
+CPU_VM_SIZE="Standard_D4s_v3"
+LOCATION="eastus2"
+
+# Skip Docker image building for CPU
+CREATE_ACR=false
+BUILD_DOCKER_IMAGE=false
+```
+
+### Example Configuration
+
+#### Ubuntu 22.04 with GPU:
+```bash
+BASE_OS="ubuntu"
+OS_VERSION="22.04"
 ENABLE_GPU=true
 GPU_VM_SIZE="Standard_NC4as_T4_v3"
 
@@ -99,26 +143,29 @@ BUILD_DOCKER_IMAGE=true
 PRELOAD_IMAGES=true
 ```
 
-#### For CPU Workloads:
+#### AlmaLinux 8 with GPU:
 ```bash
-RESOURCE_GROUP="my-cpu-batch-rg"
-LOCATION="eastus2"
+BASE_OS="almalinux"
+OS_VERSION="8"
+ENABLE_GPU=true
+GPU_VM_SIZE="Standard_NC4as_T4_v3"
+
+# Docker/ACR Configuration
+CREATE_ACR=true
+BUILD_DOCKER_IMAGE=true
+PRELOAD_IMAGES=true
+```
+
+#### Ubuntu 22.04 CPU Only:
+```bash
+BASE_OS="ubuntu"
+OS_VERSION="22.04"
 ENABLE_GPU=false
 CPU_VM_SIZE="Standard_D4s_v3"
 
 # Skip Docker image building for CPU
 CREATE_ACR=false
 BUILD_DOCKER_IMAGE=false
-```
-
-#### Using Pre-built Docker Image:
-If you already have a Docker image in ACR:
-```bash
-ENABLE_GPU=true
-CREATE_ACR=false
-BUILD_DOCKER_IMAGE=false
-PRELOAD_IMAGES=true
-CONTAINER_IMAGE="myacr.azurecr.io/my-image:tag"
 ```
 
 ## Usage
@@ -159,17 +206,18 @@ If validation passes, you'll see "VALIDATION SUCCESSFUL" and can proceed with de
 
 ### On the VM Image:
 - NVIDIA GPU drivers (via Azure VM extension, if GPU enabled)
-- Base Ubuntu 22.04 LTS system
+- Base Ubuntu 22.04 LTS or AlmaLinux 8/9 system
 
 ### On Batch Pool Nodes (via start task):
-- Docker (docker.io)
+- Docker (docker.io on Ubuntu, docker-ce on AlmaLinux)
 - NVIDIA Container Toolkit (if GPU enabled)
 
 ### In the Docker Container (optional custom image):
 If you enable `BUILD_DOCKER_IMAGE=true`, a custom Docker image will be built with:
-- Python 3.10 with pip and setuptools
+- Python 3.10 (Ubuntu) or 3.11 (AlmaLinux) with pip and setuptools
 - PyTorch 2.1.2 with CUDA 12.1 support
-- Computer vision libraries: OpenCV, OpenSlide, FAISS
+- Computer vision libraries: OpenCV, FAISS
+  - Note: OpenSlide included on Ubuntu, not available on AlmaLinux
 - Hugging Face Transformers with pre-loaded models:
   - facebook/dino-vits8
   - facebook/dino-vits16
