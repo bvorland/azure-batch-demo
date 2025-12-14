@@ -74,6 +74,10 @@ Edit the configuration section at the top of the script to customize your deploy
 - **DOCKER_IMAGE_NAME**: Name for the Docker image (default: `batch-gpu-pytorch`)
 - **DOCKER_IMAGE_TAG**: Docker image tag (default: `latest`)
 - **PRELOAD_IMAGES**: Set to `true` to preload Docker images on VM (default: `false`)
+- **CONTAINER_IMAGE**: Specify custom Docker image to use (e.g., `"myacr.azurecr.io/myapp:v1.0"`)
+  - Leave empty to use default images based on GPU/CPU configuration
+  - Supports ACR, Docker Hub, and other registries
+  - Works with PRELOAD_IMAGES for faster task startup
 
 When `BUILD_DOCKER_IMAGE=true`, the script will:
 1. Create an Azure Container Registry (if `CREATE_ACR=true`)

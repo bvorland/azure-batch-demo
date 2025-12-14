@@ -29,6 +29,11 @@ Create everything in one run (~25-30 minutes):
 ./batch-prep.sh
 ```
 
+**With verification** (recommended to test pool configuration):
+```bash
+./batch-prep.sh --verify
+```
+
 ### Modular: Separate Image and Pool Creation (Recommended for Multiple Pools)
 **Time Savings: 47% faster when creating multiple pools**
 
@@ -39,8 +44,8 @@ Create everything in one run (~25-30 minutes):
 
 **Step 2: Create multiple pools from same image** (~5 minutes each):
 ```bash
-# Development pool
-./batch-prep.sh --batch-only --pool-id dev-pool --vm-size Standard_NC4as_T4_v3 --nodes 1
+# Development pool with verification
+./batch-prep.sh --batch-only --pool-id dev-pool --vm-size Standard_NC4as_T4_v3 --nodes 1 --verify
 
 # Testing pool
 ./batch-prep.sh --batch-only --pool-id test-pool --vm-size Standard_NC6s_v3 --nodes 2
@@ -213,6 +218,47 @@ CONTAINER_IMAGE="myacr.azurecr.io/myapp:v1.0"
 - Any private registry (may require auth configuration)
 
 See README.md "Using Your Own Docker Image" section for more details.
+
+## Verifying Your Deployment
+
+After creating a pool, you can verify its configuration using the `--verify` flag:
+
+```bash
+# Verify during deployment
+./batch-prep.sh --verify
+
+# Or verify existing pool
+./batch-prep.sh --batch-only --pool-id my-pool --verify
+```
+
+**What gets tested:**
+- ✓ System configuration and OS version
+- ✓ Docker installation
+- ✓ GPU drivers and availability (if GPU enabled)
+- ✓ Preloaded Docker images (if PRELOAD_IMAGES=true)
+- ✓ Container execution capability
+
+**Example output:**
+```
+=== System Info ===
+Linux batch-node 5.15.0-1052-azure x86_64
+
+=== Docker Info ===
+Docker version 24.0.7
+
+=== Docker Images ===
+myacr.azurecr.io/batch-gpu-pytorch   latest   abc123   5.2GB
+
+=== GPU Info ===
+Tesla T4, Driver Version: 525.125.06
+
+✓ Image preloaded successfully
+✓ Docker container executed successfully
+
+[SUCCESS] ✓ Verification passed (exit code: 0)
+```
+
+The verification job takes 1-2 minutes and helps catch configuration issues before production use.
 
 ## Common Commands
 

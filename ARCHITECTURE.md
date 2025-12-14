@@ -260,10 +260,34 @@ main()
   │   ├─ create_batch_account()
   │   ├─ generate_pool_config()
   │   ├─ create_batch_pool()
+  │   ├─ create_verification_job()  # Optional: if --verify flag used
   │   └─ save_batch_metadata()
   │
   ├─ cleanup_resources("full")
   └─ print_summary("full")
+```
+
+## New Features
+
+### 1. Verification Job (--verify flag)
+Creates a test job after pool creation to validate:
+- System configuration
+- Docker installation
+- GPU availability (if enabled)
+- Preloaded images (if PRELOAD_IMAGES=true)
+- Container execution
+
+### 2. Enhanced PRELOAD_IMAGES
+Now supports custom Docker images from:
+- Azure Container Registry (with auto-authentication)
+- Docker Hub (public images)
+- Any registry (with CONTAINER_IMAGE variable)
+
+**Configuration:**
+```bash
+CONTAINER_IMAGE="myacr.azurecr.io/myapp:v1.0"
+PRELOAD_IMAGES=true
+./batch-prep.sh
 ```
 
 ## Metadata Files Enable Reuse
